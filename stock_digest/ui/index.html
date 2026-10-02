@@ -1,0 +1,1264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Stock Digest</title>
+<style>
+  :root {
+    --bg: #000;
+    --surface: #0d0e0f;
+    --surface-2: #151719;
+    --line: #23262a;
+    --text: #f5f6f7;
+    --body: #e1e3e6;
+    --muted: #8d939b;
+    --faint: #5c6168;
+    --accent: #00c805;
+    --up: #00c805;
+    --down: #ff5000;
+    --warn: #f0b429;
+    --radius: 14px;
+    --font: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --display: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 15px/1.5 var(--font);
+    -webkit-font-smoothing: antialiased;
+    padding: env(safe-area-inset-top, 0px) 16px env(safe-area-inset-bottom, 0px);
+  }
+  [hidden] { display: none !important; }
+  .search-cost { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); }
+  .cost-heading { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 13px; }
+  .cost-heading strong { font-variant-numeric: tabular-nums; font-size: 16px; }
+  .cost-agents, .cost-detail { color: var(--muted); font-size: 12px; margin-top: 8px; overflow-wrap: anywhere; }
+  .search-cost summary { cursor: pointer; margin-top: 10px; color: var(--muted); font-size: 12px; }
+  a { color: inherit; }
+  .app { max-width: 480px; margin: 0 auto; padding-block: 20px 56px; }
+
+  /* Brand + search */
+  .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; color: var(--muted); font-size: 13px; letter-spacing: .02em; }
+  .brand-mark { width: 14px; height: 14px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; }
+  .brand-mark i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); opacity: .9; }
+  .brand-mark i:nth-child(2n) { opacity: .45; }
+  .search { display: flex; gap: 8px; }
+  .search input {
+    flex: 1; min-width: 0; height: 46px; padding: 0 16px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--surface); color: var(--text);
+    font: 600 16px var(--font); letter-spacing: .04em; text-transform: uppercase; outline: none;
+  }
+  .search input::placeholder { color: var(--faint); text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .search input:focus { border-color: var(--accent); }
+  .search button {
+    height: 46px; padding: 0 20px; border: 0; border-radius: 999px; background: var(--accent); color: #000;
+    font: 600 15px var(--font); cursor: pointer;
+  }
+  .search button:disabled { opacity: .5; cursor: default; }
+  .hint { color: var(--muted); font-size: 13px; margin: 10px 4px 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
+  .chips button {
+    border: 1px solid var(--line); background: transparent; color: var(--body); border-radius: 999px;
+    padding: 5px 12px; font: 500 13px var(--font); cursor: pointer;
+  }
+  .chips button:hover { border-color: var(--muted); }
+
+  /* Card */
+  .card { margin-top: 22px; }
+  .quote { text-align: center; }
+  .quote-line { font: 600 15px var(--font); letter-spacing: .02em; }
+  .quote-line .price { margin-left: 8px; }
+  .company { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .change { font-size: 13px; margin-top: 4px; }
+  .ext { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  .up { color: var(--up); }
+  .down { color: var(--down); }
+  .flat { color: var(--muted); }
+  canvas.dots { display: block; width: 100%; height: 118px; margin: 14px 0 10px; }
+
+  .meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12.5px; }
+  .meta-left { display: flex; align-items: center; gap: 7px; }
+  .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .avatars { display: flex; flex-direction: row-reverse; border: 0; background: none; padding: 0; cursor: pointer; }
+  .avatars span {
+    width: 22px; height: 22px; border-radius: 50%; margin-left: -7px; display: grid; place-items: center;
+    font: 700 10.5px var(--font); color: #fff; border: 2px solid var(--bg); text-transform: uppercase;
+  }
+  .avatars .more { background: var(--surface-2); color: var(--muted); }
+
+  h1.headline {
+    font: 600 23px/1.28 var(--display); color: var(--accent); margin: 12px 0 6px; letter-spacing: -.005em;
+  }
+  .notice { color: var(--body); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; margin: 14px 0; }
+
+  .sections { margin-top: 18px; display: grid; gap: 22px; }
+  .section { border-left: 2px solid #3a3e44; padding: 1px 0 1px 14px; }
+  .section:first-child { border-left-color: var(--accent); }
+  .section h2 { font: 600 14px/1.35 var(--font); color: var(--accent); margin: 0 0 6px; }
+  .section p { margin: 0; color: var(--body); font-size: 15px; line-height: 1.58; }
+
+  .cite {
+    display: inline-block; min-width: 14px; height: 14px; padding: 0 3px; margin-left: 2px; border-radius: 4px;
+    background: #121416; color: #6f757c; font: 600 9px/14px var(--font); text-align: center;
+    text-decoration: none; vertical-align: 2px;
+  }
+  .cite:hover { color: var(--text); background: #262a2e; }
+  .cite + .cite { margin-left: 1px; }
+  .flag {
+    display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 999px; font: 600 10px/16px var(--font);
+    vertical-align: 1px; border: 1px solid currentColor; cursor: help; white-space: nowrap;
+  }
+  .flag-unsupported, .flag-unconfirmed { color: var(--warn); }
+  .flag-timing { color: var(--muted); }
+  .headline-flags { margin: 0 0 4px; }
+  .headline-flags .flag { margin: 0 6px 0 0; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 8px; margin-top: 12px; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+  .stat .label { color: var(--muted); font-size: 11.5px; }
+  .stat .value { font: 600 16px var(--font); margin-top: 1px; font-variant-numeric: tabular-nums; }
+  .stat .detail { color: var(--muted); font-size: 11.5px; }
+
+  details.panel { margin-top: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+  details.panel:first-of-type { margin-top: 28px; }
+  details.panel summary {
+    list-style: none; cursor: pointer; padding: 13px 16px; font: 600 14px var(--font); display: flex; justify-content: space-between;
+  }
+  details.panel summary::-webkit-details-marker { display: none; }
+  details.panel summary::after { content: "+"; color: var(--muted); font-weight: 400; }
+  details.panel[open] summary::after { content: "–"; }
+  .panel-body { padding: 0 16px 14px; }
+  .bench { display: grid; gap: 2px; margin-top: 12px; }
+  .bench-row { display: flex; justify-content: space-between; font-size: 13.5px; padding: 5px 0; border-top: 1px solid var(--line); }
+  .bench-row span:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+  .list li { font-size: 13.5px; line-height: 1.45; scroll-margin-top: 16px; border-radius: 8px; transition: background .6s; }
+  .list li.hl { background: #16311a; }
+  .list .title { color: var(--text); text-decoration: none; }
+  .list a.title:hover { text-decoration: underline; }
+  .list .sub { color: var(--muted); font-size: 12px; margin-top: 1px; }
+  .list .num { color: var(--faint); font-variant-numeric: tabular-nums; margin-right: 6px; }
+
+  .fine { margin-top: 26px; color: var(--faint); font-size: 11.5px; line-height: 1.55; display: grid; gap: 6px; }
+  .fine a { color: var(--muted); }
+
+  .loading { text-align: center; }
+  .stage { color: var(--muted); font-size: 13.5px; min-height: 42px; margin: 0 auto; max-width: 380px; }
+  .elapsed { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .error { margin-top: 22px; color: var(--text); border-left: 2px solid var(--down); padding: 2px 0 2px 14px; }
+  .error small { display: block; color: var(--muted); margin-top: 4px; }
+
+  /* Tabs */
+  .app.wide { max-width: 880px; }
+  .tabs { display: flex; gap: 4px; padding: 4px; margin-bottom: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; }
+  .tabs button {
+    flex: 1; min-height: 34px; padding: 4px 6px; border: 0; border-radius: 999px; background: transparent; color: var(--muted);
+    font: 600 13.5px/1.2 var(--font); cursor: pointer;
+  }
+  .tabs button[aria-selected="true"] { background: var(--surface-2); color: var(--text); }
+  .tabs button:focus-visible, .search button:focus-visible, .chips button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .tabs .busy::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--accent); vertical-align: 1px; }
+  .options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 4px 0; color: var(--muted); font-size: 12.5px; }
+  .options label { display: flex; align-items: center; gap: 6px; }
+  .options select {
+    height: 30px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface);
+    color: var(--text); font: 500 12.5px var(--font);
+  }
+
+  /* Material news */
+  .m-head { margin-top: 22px; }
+  .m-title { font: 600 21px/1.3 var(--display); margin: 0; letter-spacing: -.005em; }
+  .m-sub { color: var(--muted); font-size: 13px; margin-top: 3px; }
+  .m-window { color: var(--body); font-size: 13.5px; margin-top: 12px; }
+  .m-window b { color: var(--text); font-weight: 600; }
+  .m-limit { color: var(--warn); font-size: 13px; margin-top: 6px; }
+  .mtable { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 14.5px; }
+  .mtable th { text-align: left; color: var(--muted); font: 600 12px var(--font); padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .mtable td { vertical-align: top; padding: 14px 10px; border-bottom: 1px solid var(--line); color: var(--body); line-height: 1.55; }
+  .mtable td.date { white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; padding-top: 15px; }
+  .mtable td.dev { width: 32%; }
+  .mtable td.dev strong { color: var(--text); font-weight: 600; }
+  .mtable .reported { color: var(--warn); font-weight: 600; white-space: nowrap; }
+  .mtable .tags { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .mtable .tags .flag { margin: 0; }
+  .flag-status { color: var(--muted); }
+  .src { margin-top: 6px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .src a { color: var(--accent); text-decoration: none; }
+  .src a:hover { text-decoration: underline; }
+  .src a::after { content: " ↗"; font-size: 11px; }
+  .empty-quote { border-left: 2px solid var(--line); margin: 18px 0; padding: 4px 0 4px 14px; color: var(--body); }
+  .m-note { color: var(--muted); font-size: 12.5px; font-style: italic; margin-top: 14px; }
+  .m-actions { display: flex; gap: 8px; margin-top: 18px; }
+  .ghost {
+    height: 32px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line); background: transparent;
+    color: var(--body); font: 500 13px var(--font); cursor: pointer;
+  }
+  .ghost:hover { border-color: var(--muted); }
+  /* Social Sentiment */
+  .app.mid { max-width: 680px; }
+  .s-head { margin-top: 22px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .s-head .ghost:disabled { opacity: .5; cursor: default; }
+  .s-facts { color: var(--muted); font-size: 12.5px; margin-top: 8px; display: grid; gap: 2px; }
+  .s-facts b { color: var(--body); font-weight: 600; }
+  .s-note { font-size: 13px; margin-top: 10px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--body); }
+  .s-note.warn { border-color: #4a3b12; color: var(--warn); }
+  .s-note button { margin-left: 8px; }
+  .s-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; color: var(--muted); font-size: 12.5px; }
+  .s-tools select {
+    height: 30px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface);
+    color: var(--text); font: 500 12.5px var(--font);
+  }
+  .feed { list-style: none; margin: 10px 0 0; padding: 0; }
+  .feed.previous { opacity: .55; }
+  .post { border-top: 1px solid var(--line); padding: 14px 0; }
+  .post-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--muted); font-size: 12.5px; }
+  .post-meta .author { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+  .post-meta time { font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; padding: 0 7px; border-radius: 999px; font: 600 11px/18px var(--font); background: var(--surface-2); color: var(--body); border: 1px solid var(--line); }
+  .post-context { color: var(--muted); font-size: 12.5px; margin-top: 4px; overflow-wrap: anywhere; }
+  .post-title { color: var(--text); font-weight: 600; font-size: 14.5px; margin-top: 6px; overflow-wrap: anywhere; }
+  .post-text { margin: 6px 0 0; color: var(--body); font-size: 14.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .post-text.clamped { display: -webkit-box; -webkit-line-clamp: 7; -webkit-box-orient: vertical; overflow: hidden; }
+  .linkish { border: 0; background: none; padding: 0; color: var(--accent); font: 500 12.5px var(--font); cursor: pointer; }
+  .linkish:focus-visible, .ghost:focus-visible, .s-tools select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .post-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 8px; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .post-foot a { color: var(--accent); text-decoration: none; }
+  .post-foot a:hover { text-decoration: underline; }
+  .sent { padding: 0 7px; border-radius: 999px; border: 1px solid currentColor; font: 600 11px/16px var(--font); }
+  .sent-none { color: var(--faint); }
+  .post details { margin-top: 8px; font-size: 13px; }
+  .post details summary { cursor: pointer; color: var(--muted); }
+  .post details li { margin-top: 6px; color: var(--body); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .post details li small { display: block; color: var(--muted); }
+  .s-more { display: flex; align-items: center; gap: 12px; margin-top: 12px; color: var(--muted); font-size: 12.5px; }
+  .prov { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; font-size: 13px; }
+  .prov .name { color: var(--text); font-weight: 600; }
+  .prov .state-ok { color: var(--up); }
+  .prov .state-unavailable { color: var(--down); }
+  .prov .state-not_configured { color: var(--muted); }
+  .prov .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  @media (max-width: 640px) {
+    .mtable thead { display: none; }
+    .mtable, .mtable tbody, .mtable tr, .mtable td { display: block; width: 100%; }
+    .mtable tr { border-bottom: 1px solid var(--line); padding: 14px 0; }
+    .mtable td, .mtable td.dev, .mtable td.date { border: 0; padding: 0; width: auto; }
+    .mtable td.date { font-size: 12px; margin-bottom: 2px; }
+    .mtable td.why { margin-top: 6px; }
+  }
+</style>
+</head>
+<body>
+<main class="app">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>Stock Digest</div>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button type="button" role="tab" id="tab-digest" aria-controls="panel-digest" aria-selected="true">Digest</button>
+    <button type="button" role="tab" id="tab-material" aria-controls="panel-material" aria-selected="false" tabindex="-1">Material news</button>
+    <button type="button" role="tab" id="tab-social" aria-controls="panel-social" aria-selected="false" tabindex="-1">Social Sentiment</button>
+  </nav>
+  <form id="search" class="search" autocomplete="off">
+    <input id="ticker" name="ticker" placeholder="Ticker, e.g. NVDA or NASDAQ:MSFT" maxlength="16" spellcheck="false"
+           autocapitalize="characters" aria-label="Stock ticker" required>
+    <button id="go" type="submit">Search</button>
+  </form>
+  <div class="options" id="m-options" hidden>
+    <span>Last 7 days</span>
+    <label>Max <select id="m-max" aria-label="Maximum results">
+      <option value="" selected>All qualifying</option><option value="3">3</option><option value="5">5</option>
+      <option value="10">10</option></select></label>
+    <span id="m-tz"></span>
+  </div>
+
+  <div id="panel-digest" role="tabpanel" aria-labelledby="tab-digest">
+  <section id="empty" class="card">
+    <canvas class="dots" id="idle-dots" aria-hidden="true"></canvas>
+    <p class="hint">Why is it moving? Enter a ticker for an AI digest of the latest news, catalysts, analyst
+      actions, and upcoming events, with sources.</p>
+    <div class="chips" id="examples"></div>
+  </section>
+
+  <section id="loading" class="card loading" hidden aria-live="polite">
+    <div class="quote-line" id="loading-ticker"></div>
+    <canvas class="dots" id="loading-dots" aria-hidden="true"></canvas>
+    <p class="stage" id="stage">Starting…</p>
+    <div class="elapsed" id="elapsed"></div>
+  </section>
+
+  <div id="error" class="error" hidden role="alert"></div>
+
+  <article id="digest" class="card" hidden>
+    <header class="quote">
+      <div class="quote-line"><span id="q-ticker"></span><span class="price" id="q-price"></span></div>
+      <div class="company" id="q-company"></div>
+      <div class="change" id="q-change"></div>
+      <div class="ext" id="q-ext" hidden></div>
+    </header>
+    <canvas class="dots" id="digest-dots" aria-hidden="true"></canvas>
+    <div class="meta">
+      <div class="meta-left"><span class="pulse"></span><span id="updated"></span></div>
+      <button class="avatars" id="avatars" type="button" aria-label="Show sources"></button>
+    </div>
+    <div id="notice" class="notice" hidden></div>
+    <h1 class="headline" id="headline"></h1>
+    <div class="headline-flags" id="headline-flags"></div>
+    <div class="sections" id="sections"></div>
+
+    <details class="panel" id="market-panel">
+      <summary>Market data</summary>
+      <div class="panel-body"><div class="stats" id="stats"></div><div class="bench" id="bench"></div></div>
+    </details>
+    <details class="panel" id="headlines-panel">
+      <summary id="headlines-summary">Recent headlines</summary>
+      <div class="panel-body"><ol class="list" id="headlines"></ol></div>
+    </details>
+    <details class="panel" id="sources-panel">
+      <summary id="sources-summary">Sources</summary>
+      <div class="panel-body"><ol class="list" id="sources"></ol></div>
+    </details>
+    <footer class="fine" id="fine"></footer>
+  </article>
+  </div>
+
+  <div id="panel-material" role="tabpanel" aria-labelledby="tab-material" hidden>
+    <section id="m-empty" class="card">
+      <p class="hint">Material company news: the potentially stock-moving developments for one company in a recent
+        window, one entry per development, each with its source. Roundups, minor releases and analyst chatter are
+        left out. Accepts NVDA, BRK.B or NASDAQ:MSFT.</p>
+      <div class="chips" id="m-examples"></div>
+    </section>
+    <section id="m-loading" class="card loading" hidden aria-live="polite">
+      <div class="quote-line" id="m-loading-ticker"></div>
+      <canvas class="dots" id="m-loading-dots" aria-hidden="true"></canvas>
+      <p class="stage" id="m-stage">Starting…</p>
+      <div class="elapsed" id="m-elapsed"></div>
+    </section>
+    <div id="m-error" class="error" hidden role="alert"></div>
+    <article id="m-result" hidden>
+      <header class="m-head">
+        <h1 class="m-title" id="m-title"></h1>
+        <div class="m-sub" id="m-company"></div>
+        <p class="m-window" id="m-window"></p>
+        <div class="m-limit" id="m-limit" hidden></div>
+      </header>
+      <table class="mtable" id="m-table">
+        <thead><tr><th scope="col">Date</th><th scope="col">Development</th><th scope="col" id="m-why-head"></th></tr></thead>
+        <tbody id="m-rows"></tbody>
+      </table>
+      <blockquote class="empty-quote" id="m-none" hidden></blockquote>
+      <p class="m-note" id="m-coverage" hidden></p>
+      <div class="m-actions"><button type="button" class="ghost" id="m-copy">Copy Markdown</button></div>
+      <footer class="fine" id="m-fine"></footer>
+    </article>
+  </div>
+
+  <div id="panel-social" role="tabpanel" aria-labelledby="tab-social" hidden>
+    <section id="s-empty" class="card">
+      <p class="hint">Select a ticker to view social posts.</p>
+      <p class="hint">Individual posts from X, Reddit, StockTwits, Hacker News and YouTube published in the last 48 hours,
+        newest first, each linked to the original.</p>
+      <div class="chips" id="s-examples"></div>
+    </section>
+    <section id="s-loading" class="card loading" hidden aria-live="polite">
+      <div class="quote-line" id="s-loading-ticker"></div>
+      <canvas class="dots" id="s-loading-dots" aria-hidden="true"></canvas>
+      <p class="stage">Collecting posts from every configured source…</p>
+      <div class="elapsed" id="s-elapsed"></div>
+    </section>
+    <article id="s-result" hidden>
+      <header class="s-head">
+        <div>
+          <h1 class="m-title" id="s-title"></h1>
+          <div class="m-sub" id="s-company"></div>
+        </div>
+        <button type="button" class="ghost" id="s-refresh">Refresh</button>
+      </header>
+      <div class="s-facts" id="s-facts"></div>
+      <div id="s-notes" aria-live="polite"></div>
+      <blockquote class="empty-quote" id="s-none" hidden></blockquote>
+      <div class="s-tools" id="s-tools">
+        <span id="s-count"></span>
+        <label>Source <select id="s-filter" aria-label="Filter posts by source"></select></label>
+      </div>
+      <ol class="feed" id="s-feed" aria-label="Social posts"></ol>
+      <div class="s-more" id="s-more" hidden><button type="button" class="ghost" id="s-more-btn">Show 50 more</button><span id="s-more-count"></span></div>
+      <details class="panel" id="s-providers">
+        <summary>Sources and coverage</summary>
+        <div class="panel-body"><ul class="prov" id="s-prov"></ul></div>
+      </details>
+      <footer class="fine" id="s-fine"></footer>
+    </article>
+    <div id="s-error" class="error" hidden role="alert"></div>
+  </div>
+  <section id="search-cost" class="search-cost" hidden aria-label="Search cost">
+    <div class="cost-heading" aria-live="polite"><span id="cost-label"></span><strong id="cost-total"></strong></div>
+    <div class="cost-agents" id="cost-agents"></div>
+    <details><summary>Cost breakdown</summary><div class="cost-detail" id="cost-detail"></div></details>
+  </section>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  };
+  const safeUrl = (url) => (typeof url === "string" && /^https?:\/\//i.test(url) ? url : null);
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const COLORS = { up: [0, 200, 5], flat: [0, 200, 5], down: [255, 80, 0], idle: [120, 128, 136] };
+
+  /* ---------- Dot-matrix band ---------- */
+  class Dots {
+    constructor(canvas) {
+      this.canvas = canvas;
+      this.ctx = canvas.getContext("2d");
+      this.rgb = COLORS.idle;
+      this.phase = Math.random() * 10;
+      this.frame = null;
+      new ResizeObserver(() => this.draw(this.phase)).observe(canvas);
+    }
+    color(name) { this.rgb = COLORS[name] || COLORS.up; }
+    draw(t) {
+      const dpr = window.devicePixelRatio || 1;
+      const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
+      if (!w || !h) return;
+      if (this.canvas.width !== Math.round(w * dpr)) { this.canvas.width = Math.round(w * dpr); this.canvas.height = Math.round(h * dpr); }
+      const ctx = this.ctx;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      const gap = 12, cols = Math.floor(w / gap), rows = Math.floor(h / gap);
+      const ox = (w - (cols - 1) * gap) / 2, oy = (h - (rows - 1) * gap) / 2;
+      const [r, g, b] = this.rgb;
+      for (let row = 0; row < rows; row++) {
+        const ny = rows > 1 ? row / (rows - 1) : .5;
+        const band = Math.exp(-Math.pow((ny - .5) / .34, 2));
+        for (let col = 0; col < cols; col++) {
+          const nx = cols > 1 ? col / (cols - 1) : .5;
+          const wave = .5 + .5 * Math.sin(nx * 8.5 + t * 1.2 + Math.sin(ny * 3.1 + t * .6) * 1.6) * Math.cos(ny * 3.6 - t * .8 + nx * 1.7);
+          const edge = Math.min(1, nx * 6, (1 - nx) * 6);
+          const v = Math.max(0, wave * band * edge);
+          const radius = .6 + v * 3.1;
+          ctx.fillStyle = `rgba(${r},${g},${b},${(.12 + .88 * v).toFixed(3)})`;
+          ctx.beginPath();
+          ctx.arc(ox + col * gap, oy + row * gap, radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+    start() {
+      this.stop();
+      if (reducedMotion) { this.draw(this.phase); return; }
+      const tick = (now) => { this.draw(this.phase + now / 1000); this.frame = requestAnimationFrame(tick); };
+      this.frame = requestAnimationFrame(tick);
+    }
+    stop(seed) {
+      if (this.frame) cancelAnimationFrame(this.frame);
+      this.frame = null;
+      if (seed !== undefined) { this.phase = seed; this.draw(seed); }
+    }
+  }
+  const idleDots = new Dots($("idle-dots"));
+  const loadingDots = new Dots($("loading-dots"));
+  const digestDots = new Dots($("digest-dots"));
+  idleDots.color("idle");
+  idleDots.start();
+
+  /* ---------- Helpers ---------- */
+  function ago(iso) {
+    const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (seconds < 90) return "just now";
+    if (seconds < 5400) return `${Math.round(seconds / 60)}m ago`;
+    if (seconds < 172800) return `${Math.round(seconds / 3600)}h ago`;
+    return `${Math.round(seconds / 86400)}d ago`;
+  }
+  function seedFrom(text) { let h = 0; for (const c of text) h = (h * 31 + c.charCodeAt(0)) >>> 0; return (h % 1000) / 37; }
+  function hue(text) { let h = 7; for (const c of text) h = (h * 33 + c.charCodeAt(0)) >>> 0; return h % 360; }
+  function initials(publisher) {
+    const name = publisher.replace(/^www\./i, "").replace(/[^A-Za-z0-9 ]/g, " ").trim();
+    const words = name.split(/\s+/).filter(Boolean);
+    return (words[0] || "?")[0];
+  }
+
+  function claimNodes(claim, parent) {
+    parent.append(document.createTextNode(claim.text));
+    for (const ref of claim.sources) {
+      const link = el("a", "cite", String(ref));
+      link.href = `#src-${ref}`;
+      link.title = `Source ${ref}`;
+      link.addEventListener("click", (event) => { event.preventDefault(); revealSource(ref); });
+      parent.append(link);
+    }
+    for (const flag of claim.flags) {
+      const tag = el("span", `flag flag-${flag.kind}`, flag.label);
+      tag.title = flag.detail;
+      parent.append(tag);
+    }
+  }
+  function revealSource(ref) {
+    const panel = $("sources-panel");
+    panel.open = true;
+    const item = document.getElementById(`src-${ref}`);
+    if (!item) return;
+    item.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
+    item.classList.add("hl");
+    setTimeout(() => item.classList.remove("hl"), 1400);
+  }
+
+  /* ---------- Rendering ---------- */
+  let updatedAt = null;
+  function render(d) {
+    $("q-ticker").textContent = d.ticker;
+    const price = $("q-price");
+    price.textContent = d.price;
+    price.className = `price ${d.direction}`;
+    $("q-company").textContent = d.company;
+    const change = $("q-change");
+    change.textContent = `${d.change} (${d.percent}) · ${d.session}`;
+    change.className = `change ${d.direction}`;
+    const ext = $("q-ext");
+    ext.hidden = !d.extended;
+    if (d.extended) {
+      ext.replaceChildren(document.createTextNode(`${d.extended.label} ${d.extended.price} `));
+      ext.append(el("span", d.extended.direction, `${d.extended.change} (${d.extended.percent})`));
+      ext.append(document.createTextNode(` · ${d.extended.time}`));
+    }
+    digestDots.color(d.direction);
+    digestDots.stop(seedFrom(d.ticker));
+
+    updatedAt = d.updated_at;
+    $("updated").textContent = `Updated ${ago(updatedAt)}`;
+
+    // Publisher badges for the cited sources, like a byline of outlets.
+    const cited = new Set();
+    if (d.headline) d.headline.sources.forEach((s) => cited.add(s));
+    d.sections.forEach((s) => [s.heading, ...s.sentences].forEach((c) => c.sources.forEach((r) => cited.add(r))));
+    const publishers = [...new Set(d.sources.filter((s) => cited.has(s.id) && s.id !== 1).map((s) => s.publisher))];
+    const avatars = $("avatars");
+    avatars.replaceChildren();
+    const shown = publishers.slice(0, 4);
+    if (publishers.length > shown.length) avatars.append(el("span", "more", `+${publishers.length - shown.length}`));
+    for (const name of shown.reverse()) {
+      const badge = el("span", "", initials(name));
+      badge.style.background = `hsl(${hue(name)} 38% 34%)`;
+      badge.title = name;
+      avatars.append(badge);
+    }
+    avatars.hidden = publishers.length === 0;
+    avatars.onclick = () => { $("sources-panel").open = true; $("sources-panel").scrollIntoView({ behavior: "smooth" }); };
+
+    const notice = $("notice");
+    notice.hidden = !d.notice;
+    notice.textContent = d.notice || "";
+    const headline = $("headline");
+    headline.replaceChildren();
+    headline.hidden = !d.headline;
+    const headlineFlags = $("headline-flags");
+    headlineFlags.replaceChildren();
+    if (d.headline) {
+      headline.textContent = d.headline.text;
+      for (const flag of d.headline.flags) {
+        const tag = el("span", `flag flag-${flag.kind}`, flag.label);
+        tag.title = flag.detail;
+        headlineFlags.append(tag);
+      }
+    }
+
+    const sections = $("sections");
+    sections.replaceChildren();
+    for (const section of d.sections) {
+      const block = el("section", "section");
+      const h2 = el("h2");
+      claimNodes(section.heading, h2);
+      block.append(h2);
+      const p = el("p");
+      section.sentences.forEach((sentence, index) => {
+        if (index) p.append(document.createTextNode(" "));
+        claimNodes(sentence, p);
+      });
+      block.append(p);
+      if (section.kind === "earnings" && d.earnings && d.earnings.stats.length) {
+        const stats = el("div", "stats");
+        for (const stat of d.earnings.stats) stats.append(statTile(stat));
+        block.append(stats);
+      }
+      sections.append(block);
+    }
+    sections.hidden = d.sections.length === 0;
+
+    const stats = $("stats");
+    stats.replaceChildren(...d.stats.map(statTile));
+    const bench = $("bench");
+    bench.replaceChildren();
+    for (const b of d.benchmarks) {
+      const row = el("div", "bench-row");
+      row.append(el("span", "", b.name), el("span", b.direction, b.percent));
+      bench.append(row);
+    }
+
+    const headlines = $("headlines");
+    headlines.replaceChildren();
+    for (const item of d.headlines) {
+      const li = el("li");
+      const url = safeUrl(item.url);
+      const title = el(url ? "a" : "span", "title", item.title);
+      if (url) { title.href = url; title.target = "_blank"; title.rel = "noopener noreferrer"; }
+      const bits = [item.publisher, item.published].filter(Boolean);
+      if (item.unconfirmed) bits.push("Unconfirmed report");
+      if (item.time_unknown) bits.push("Time unknown");
+      li.append(title, el("div", "sub", bits.join(" · ")));
+      headlines.append(li);
+    }
+    $("headlines-panel").hidden = d.headlines.length === 0;
+    $("headlines-summary").textContent = `Recent headlines (${d.headlines.length})`;
+    $("headlines-panel").open = !d.headline && d.headlines.length > 0;
+
+    const sources = $("sources");
+    sources.replaceChildren();
+    for (const source of d.sources) {
+      const li = el("li");
+      li.id = `src-${source.id}`;
+      const url = safeUrl(source.url);
+      li.append(el("span", "num", String(source.id)));
+      const title = el(url ? "a" : "span", "title", source.title || source.publisher);
+      if (url) { title.href = url; title.target = "_blank"; title.rel = "noopener noreferrer"; }
+      li.append(title, el("div", "sub", [source.publisher, source.published].filter(Boolean).join(" · ")));
+      sources.append(li);
+    }
+    $("sources-summary").textContent = `Sources (${d.sources.length})`;
+    $("sources-panel").open = false;
+    $("market-panel").open = false;
+
+    const fine = $("fine");
+    fine.replaceChildren();
+    const times = [`Price observed ${d.timestamps.price_observed}`];
+    if (d.timestamps.news_checked) times.push(`news checked ${d.timestamps.news_checked}`);
+    times.push(`generated ${d.timestamps.generated}`);
+    fine.append(el("div", "", times.join(" · ") + ". Prices: Yahoo Finance, regular session, 15-minute delay cutoff."));
+    if (d.coverage.length) fine.append(el("div", "", d.coverage.join(" ")));
+    const disclosure = el("div", "", d.disclosure + " ");
+    const trace = safeUrl(d.trace_url);
+    if (trace) {
+      const link = el("a", "", "Run trace");
+      link.href = trace; link.target = "_blank"; link.rel = "noopener noreferrer";
+      disclosure.append(link);
+    }
+    fine.append(disclosure);
+  }
+  function statTile(stat) {
+    const tile = el("div", "stat");
+    tile.append(el("div", "label", stat.label), el("div", "value", stat.value));
+    if (stat.detail) tile.append(el("div", "detail", stat.detail));
+    return tile;
+  }
+  setInterval(() => { if (updatedAt) $("updated").textContent = `Updated ${ago(updatedAt)}`; }, 30000);
+
+  /* ---------- Tabs ---------- */
+  const TABS = ["digest", "material", "social"];
+  const TAB_NAMES = { digest: "Stock Digest", material: "Material news", social: "Social Sentiment" };
+  let activeTab = "digest";
+  const running = { digest: false, material: false, social: false };
+  let currentTicker = null;
+  // One search feeds every tab; re-submitting the ticker already running is blocked.
+  function syncButton() {
+    const busy = running.digest || running.material;
+    $("go").disabled = busy && $("ticker").value.trim().toUpperCase() === currentTicker;
+    for (const tab of TABS) $(`tab-${tab}`).classList.toggle("busy", running[tab] && tab !== activeTab);
+  }
+  function setUrl() {
+    const params = new URLSearchParams();
+    if (currentTicker) params.set("t", currentTicker);
+    if (activeTab !== "digest") params.set("tab", activeTab);
+    const query = params.toString();
+    history.replaceState(null, "", query ? `?${query}` : location.pathname);
+    const ticker = currentTicker;
+    const name = TAB_NAMES[activeTab];
+    document.title = ticker ? `${ticker} · ${name}` : name;
+  }
+  function selectTab(name, focus) {
+    activeTab = name;
+    for (const tab of TABS) {
+      const button = $(`tab-${tab}`);
+      button.setAttribute("aria-selected", String(tab === name));
+      button.tabIndex = tab === name ? 0 : -1;
+      $(`panel-${tab}`).hidden = tab !== name;
+    }
+    if (focus) $(`tab-${name}`).focus();
+    document.querySelector(".app").classList.toggle("wide", name === "material");
+    document.querySelector(".app").classList.toggle("mid", name === "social");
+    $("m-options").hidden = name !== "material";
+    if (name === "digest" && !$("empty").hidden) idleDots.start(); else idleDots.stop();
+    syncButton();
+    setUrl();
+    if (name === "social") socialOpened();
+  }
+  for (const tab of TABS) {
+    $(`tab-${tab}`).addEventListener("click", () => selectTab(tab));
+    $(`tab-${tab}`).addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const next = TABS[(TABS.indexOf(tab) + (event.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length];
+      selectTab(next, true);
+    });
+  }
+
+  /* ---------- Streaming ---------- */
+  // Reads newline-delimited JSON, passing every event to onEvent. Resolves with null when the
+  // stream ends, or with a synthetic error event when the server rejected the request.
+  async function stream(url, signal, onEvent) {
+    const response = await fetch(url, { signal, cache: "no-store" });
+    if (!response.ok) {
+      return { type: "error", message: response.status === 404
+        ? "The running server is older than this page and lacks this feature. Stop it (Ctrl-C) and run stock-digest again."
+        : `The local server answered HTTP ${response.status}.` };
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return null;
+      buffer += decoder.decode(value, { stream: true });
+      let cut;
+      while ((cut = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, cut).trim();
+        buffer = buffer.slice(cut + 1);
+        if (line) onEvent(JSON.parse(line));
+      }
+    }
+  }
+  function errorInto(box, message, trace) {
+    box.replaceChildren(document.createTextNode(message));
+    const url = safeUrl(trace);
+    if (url) {
+      const small = el("small");
+      const link = el("a", "", "Run trace");
+      link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer";
+      small.append(link);
+      box.append(small);
+    }
+  }
+  function startClock(target) {
+    const started = Date.now();
+    target.textContent = "0s";
+    return setInterval(() => { target.textContent = `${Math.round((Date.now() - started) / 1000)}s`; }, 1000);
+  }
+
+  /* ---------- Digest tab state ---------- */
+  let timer = null;
+  function view(name) {
+    $("empty").hidden = name !== "empty";
+    $("loading").hidden = name !== "loading";
+    $("digest").hidden = name !== "digest";
+    $("error").hidden = name !== "error";
+    if (name === "empty" && activeTab === "digest") idleDots.start(); else idleDots.stop();
+    if (name === "loading") loadingDots.start(); else loadingDots.stop();
+  }
+  function showError(message, trace) {
+    errorInto($("error"), message, trace);
+    view("error");
+  }
+  function startDigest(ticker) {
+    $("loading-ticker").textContent = ticker;
+    $("stage").textContent = "Starting…";
+    loadingDots.color("up");
+    view("loading");
+    running.digest = true;
+    clearInterval(timer);
+    timer = startClock($("elapsed"));
+  }
+  function settleDigest(event) {
+    if (event.type === "result") { render(event.digest); view("digest"); }
+    else showError(event.message, event.trace_url);
+    clearInterval(timer);
+    running.digest = false;
+    syncButton();
+  }
+
+  /* ---------- Material news tab state ---------- */
+  let mTimer = null, mResult = null;
+  const mLoadingDots = new Dots($("m-loading-dots"));
+  const timezone = (() => {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (error) { return "UTC"; }
+  })();
+  $("m-tz").textContent = `Times in ${timezone}`;
+  function mView(name) {
+    for (const part of ["empty", "loading", "error", "result"]) $(`m-${part}`).hidden = part !== name;
+    if (name === "loading") mLoadingDots.start(); else mLoadingDots.stop();
+  }
+
+  function renderMaterial(m) {
+    mResult = m;
+    $("m-title").textContent = `${m.ticker} — material company developments`;
+    $("m-company").textContent = [m.company, m.exchange].filter(Boolean).join(" · ");
+    $("m-window").replaceChildren(el("b", "", "Window: "), document.createTextNode(
+      `${m.window}. One entry per distinct development; dates below are announcement or reporting dates.`));
+    $("m-limit").hidden = !m.limit_note;
+    $("m-limit").textContent = m.limit_note || "";
+    $("m-why-head").textContent = `Why it could matter to ${m.ticker}`;
+    const rows = $("m-rows");
+    rows.replaceChildren();
+    for (const entry of m.entries) {
+      const tr = el("tr");
+      const dev = el("td", "dev");
+      dev.append(el("strong", "", entry.headline));
+      if (entry.reported) dev.append(document.createTextNode(" "), el("span", "reported", "— reported"));
+      const tags = el("div", "tags");
+      const status = el("span", "flag flag-status", entry.status);
+      status.title = "Event status";
+      tags.append(status);
+      if (entry.verification === "search_results_only") {
+        const flag = el("span", "flag flag-timing", "Not opened");
+        flag.title = "The source page could not be opened for full-text verification; this entry relies on search-result content.";
+        tags.append(flag);
+      }
+      dev.append(tags);
+      const why = el("td", "why", entry.why);
+      const links = el("div", "src");
+      for (const source of entry.sources) {
+        const url = safeUrl(source.url);
+        if (!url) continue;
+        const link = el("a", "", source.publisher);
+        link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer";
+        if (source.title) link.title = source.title;
+        links.append(link);
+      }
+      why.append(links);
+      tr.append(el("td", "date", entry.date), dev, why);
+      rows.append(tr);
+    }
+    $("m-table").hidden = m.entries.length === 0;
+    $("m-none").hidden = !m.empty_message;
+    $("m-none").textContent = m.empty_message || "";
+    $("m-coverage").hidden = !m.coverage_note;
+    $("m-coverage").textContent = m.coverage_note ? `Coverage note: ${m.coverage_note}` : "";
+    const fine = $("m-fine");
+    fine.replaceChildren();
+    const disclosure = el("div", "", `Generated ${m.generated}. AI-assisted research from web search; coverage is not ` +
+      "exhaustive and sources should be checked before relying on them. Not investment advice. ");
+    const trace = safeUrl(m.trace_url);
+    if (trace) {
+      const link = el("a", "", "Run trace");
+      link.href = trace; link.target = "_blank"; link.rel = "noopener noreferrer";
+      disclosure.append(link);
+    }
+    fine.append(disclosure);
+  }
+
+  function startMaterial(ticker) {
+    $("m-loading-ticker").textContent = ticker;
+    $("m-stage").textContent = "Starting…";
+    mLoadingDots.color("up");
+    mView("loading");
+    running.material = true;
+    clearInterval(mTimer);
+    mTimer = startClock($("m-elapsed"));
+  }
+  function settleMaterial(event) {
+    if (event.type === "result") { renderMaterial(event.material); mView("result"); }
+    else { errorInto($("m-error"), event.message, event.trace_url); mView("error"); }
+    clearInterval(mTimer);
+    running.material = false;
+    syncButton();
+  }
+
+  /* ---------- One combined run for both tabs ---------- */
+  let lastCost = null;
+  const costMoney = (value) => value > 0 && value < 0.0001 ? "<$0.0001" : `$${value.toFixed(4)}`;
+  function renderCost(cost, ticker) {
+    if (!cost || typeof cost.known_total_usd !== "number") return;
+    lastCost = cost;
+    $("search-cost").hidden = false;
+    $("cost-label").textContent = `${ticker} · Estimated search cost${cost.complete ? "" : " so far"}${cost.partial ? " (partial)" : ""}`;
+    $("cost-total").textContent = cost.partial && cost.known_total_usd === 0 ? "Unavailable" : costMoney(cost.known_total_usd);
+    const agents = Object.entries(cost.by_agent || {});
+    $("cost-agents").textContent = agents.map(([kind, row]) =>
+      `${kind === "material" ? "Material news" : "Digest"}: ` +
+      (row.total_usd === null && row.known_total_usd === 0 ? "unavailable" :
+        `${costMoney(row.known_total_usd)}${row.total_usd === null ? " recorded" : ""}`)
+    ).join(" · ") || "No billable usage reported.";
+    const details = $("cost-detail");
+    details.replaceChildren(
+      el("div", "", `Model tokens: ${costMoney(cost.llm_usd)} · Web search: ${costMoney(cost.web_search_usd)}`)
+    );
+    for (const [kind, row] of agents) {
+      details.append(el("div", "", `${kind === "material" ? "Material news" : "Digest"}: ` +
+        `${row.model_calls} model responses · ${row.web_search_calls} searches · ` +
+        `${row.input_tokens.toLocaleString()} input tokens (${row.cached_tokens.toLocaleString()} cached, ` +
+        `${row.cache_write_tokens.toLocaleString()} cache writes) · ${row.output_tokens.toLocaleString()} output tokens ` +
+        `(includes ${row.reasoning_tokens.toLocaleString()} reasoning). ${row.models.join(", ")}`));
+    }
+    for (const note of cost.notes || []) details.append(el("div", "", note));
+    details.append(el("div", "", `USD estimate using rates checked ${cost.pricing_as_of}. ` +
+      "Material news + Digest only; excludes Social Sentiment and other data providers. Actual billing may differ."));
+  }
+  function unavailableCost(ticker) {
+    if (lastCost && lastCost.complete) return;
+    if (lastCost) {
+      renderCost({ ...lastCost, complete: true, partial: true,
+        notes: [...(lastCost.notes || []), "The connection ended before final usage arrived; this amount is incomplete."] }, ticker);
+    } else {
+      $("search-cost").hidden = false;
+      $("cost-label").textContent = `${ticker} · Estimated search cost`;
+      $("cost-total").textContent = "Unavailable";
+      $("cost-agents").textContent = "No cost report was received.";
+      $("cost-detail").replaceChildren(el("div", "", "The server did not return usage for this search."));
+    }
+  }
+  // /api/run streams both the material-news run and the digest (which consumes the material
+  // results, so it finishes last). Every event carries its kind; each kind ends exactly once.
+  let controller = null;
+  async function runAll(raw) {
+    const ticker = raw.trim().toUpperCase();
+    if (!ticker) return;
+    if (controller) controller.abort();
+    controller = new AbortController();
+    const signal = controller.signal;
+    lastCost = null;
+    $("search-cost").hidden = true;
+    startDigest(ticker);
+    startMaterial(ticker);
+    syncButton();
+    const params = new URLSearchParams({ ticker, tz: timezone });
+    if ($("m-max").value) params.set("max", $("m-max").value);
+    const settled = { digest: false, material: false };
+    const settle = (kind, event) => {
+      if (!(kind in settled) || settled[kind]) return;
+      settled[kind] = true;
+      if (kind === "material") settleMaterial(event); else settleDigest(event);
+    };
+    const settleAll = (message) => { for (const kind of ["digest", "material"]) settle(kind, { type: "error", message }); };
+    try {
+      const rejected = await stream(`/api/run?${params}`, signal, (event) => {
+        if (signal.aborted) return;
+        if (event.type === "stage") (event.kind === "material" ? $("m-stage") : $("stage")).textContent = event.message;
+        else if (event.type === "result" || event.type === "error") {
+          settle(event.kind, event);
+          renderCost(event.cost, ticker);
+        }
+      });
+      if (signal.aborted) return;
+      settleAll(rejected ? rejected.message : "The connection closed before the run finished.");
+      unavailableCost(ticker);
+    } catch (error) {
+      if (error.name === "AbortError") return;
+      settleAll("Could not reach the local digest server. Is it still running?");
+      unavailableCost(ticker);
+    }
+  }
+  $("m-copy").addEventListener("click", async () => {
+    if (!mResult) return;
+    const button = $("m-copy");
+    try {
+      await navigator.clipboard.writeText(mResult.markdown);
+      button.textContent = "Copied";
+    } catch (error) {
+      button.textContent = "Copy failed";
+    }
+    setTimeout(() => { button.textContent = "Copy Markdown"; }, 1500);
+  });
+
+  /* ---------- Social Sentiment ---------- */
+  // Every response carries the whole retrieval; the feed renders it 50 posts at a time.
+  const S_PAGE = 50;
+  const S_LABELS = { x: "X", stocktwits: "StockTwits", reddit: "Reddit", hackernews: "Hacker News", youtube: "YouTube",
+                     seeking_alpha: "Seeking Alpha" };
+  const sLoadingDots = new Dots($("s-loading-dots"));
+  // `seq` identifies the newest request; any other response is discarded on arrival.
+  const sState = { seq: 0, controller: null, timer: null, data: null, forTicker: null, requested: null,
+                   filter: "all", limit: S_PAGE };
+  const dateTime = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+                                                         timeZoneName: "short" });
+  const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  const count = new Intl.NumberFormat();
+  const when = (iso) => dateTime.format(new Date(iso));
+
+  function sView(name) {
+    for (const part of ["empty", "loading", "result", "error"]) $(`s-${part}`).hidden = part !== name;
+    if (name === "loading") sLoadingDots.start(); else sLoadingDots.stop();
+  }
+  function socialOpened() {
+    if (!currentTicker) { sView("empty"); return; }
+    if (sState.requested !== currentTicker) loadSocial(currentTicker);
+  }
+  function socialTickerChanged() {
+    // A newer ticker supersedes whatever is in flight for the old one.
+    if (sState.controller) sState.controller.abort();
+    sState.controller = null;
+    sState.seq++;
+    sState.requested = null;
+    clearInterval(sState.timer);
+    running.social = false;
+    if (activeTab === "social") loadSocial(currentTicker);
+  }
+
+  async function loadSocial(ticker) {
+    if (!ticker) { sView("empty"); return; }
+    if (sState.controller) sState.controller.abort();
+    const controller = new AbortController();
+    sState.controller = controller;
+    const seq = ++sState.seq;
+    sState.requested = ticker;
+    const previous = sState.data && sState.forTicker === ticker ? sState.data : null;
+    running.social = true;
+    syncButton();
+    clearInterval(sState.timer);
+    if (previous) {
+      $("s-feed").classList.add("previous");
+      $("s-refresh").disabled = true;
+      socialNotes(previous, { refreshing: true });
+    } else {
+      sState.data = null;
+      sState.forTicker = null;
+      $("s-loading-ticker").textContent = ticker;
+      sLoadingDots.color("up");
+      sView("loading");
+      sState.timer = startClock($("s-elapsed"));
+    }
+    let outcome;
+    try {
+      const response = await fetch(`/api/social?query=${encodeURIComponent(ticker)}`, { signal: controller.signal, cache: "no-store" });
+      let body = null;
+      try { body = await response.json(); } catch (error) { body = null; }
+      if (response.ok && body && Array.isArray(body.posts)) outcome = { data: body };
+      else if (body && typeof body.detail === "string") outcome = { error: body.detail };
+      else outcome = { error: response.status === 404
+        ? "The running server is older than this page and lacks this feature. Stop it (Ctrl-C) and run stock-digest again."
+        : `The local server answered HTTP ${response.status}.` };
+    } catch (error) {
+      if (error.name === "AbortError") return;
+      outcome = { error: "Could not reach the local server. Is it still running?" };
+    }
+    if (seq !== sState.seq || ticker !== currentTicker) return;  // stale: a newer request owns the tab
+    clearInterval(sState.timer);
+    sState.controller = null;
+    running.social = false;
+    syncButton();
+    $("s-refresh").disabled = false;
+    $("s-feed").classList.remove("previous");
+    if (outcome.data) {
+      sState.data = outcome.data;
+      sState.forTicker = ticker;
+      sState.filter = "all";
+      sState.limit = S_PAGE;
+      renderSocial();
+      sView("result");
+    } else if (previous) {
+      socialNotes(previous, { failed: outcome.error });
+      sView("result");
+    } else {
+      const box = $("s-error");
+      box.replaceChildren(document.createTextNode(outcome.error));
+      box.append(el("small", "", "Posts could not be retrieved; this is not an empty result."), retryButton());
+      sView("error");
+    }
+  }
+  function retryButton() {
+    const button = el("button", "ghost", "Retry");
+    button.type = "button";
+    button.style.marginTop = "10px";
+    button.addEventListener("click", () => loadSocial(currentTicker));
+    return button;
+  }
+  function note(text, warn) {
+    const box = el("div", warn ? "s-note warn" : "s-note", text);
+    $("s-notes").append(box);
+    return box;
+  }
+  const names = (list) => list.map((p) => p.label).join(", ");
+
+  function socialNotes(d, { refreshing = false, failed = null } = {}) {
+    $("s-notes").replaceChildren();
+    const retrieved = clock.format(new Date(d.retrieved_at));
+    if (refreshing) note(`Refreshing… the posts below are previous results retrieved at ${retrieved}.`);
+    if (failed) note(`Refresh failed: ${failed} The posts below are previous results retrieved at ${retrieved}.`, true)
+      .append(retryButton());
+    const providers = d.providers || [];
+    const ok = providers.filter((p) => p.state === "ok");
+    const down = providers.filter((p) => p.state === "unavailable");
+    const unset = providers.filter((p) => p.state === "not_configured" && p.message);
+    if (down.length) {
+      const detail = down.map((p) => `${p.label}: ${p.message}`).join(" ");
+      const text = ok.length
+        ? `Partial results: ${names(down)} could not be reached; posts from the other sources are shown. ${detail}`
+        : `No source could be reached, so this is a failed retrieval, not an empty result. ${detail}`;
+      note(text, true).append(retryButton());
+    }
+    if (unset.length) note(`Not configured: ${names(unset)}. ${unset.map((p) => p.message).join(" ")}`);
+    const capped = providers.filter((p) => p.capped);
+    if (ok.length) note(capped.length
+      ? `Coverage is not exhaustive. ${names(capped)} reached ${capped.length > 1 ? "their" : "its"} retrieval limit, so more posts in the window likely exist. Every source returns a bounded slice; see Sources and coverage.`
+      : "Coverage is not exhaustive: every source returns a bounded slice of the platform. See Sources and coverage.");
+    const excluded = Object.entries(d.excluded || {});
+    if (excluded.length) note(`Not shown: ${excluded.map(([reason, n]) => `${n} ${reason}`).join("; ")}.`);
+    const empty = d.posts.length === 0;
+    $("s-none").hidden = !(empty && !down.length && ok.length);
+    $("s-none").textContent = `No social posts found for ${d.ticker} in the last 48 hours.`;
+    $("s-tools").hidden = empty;
+  }
+
+  function renderSocial() {
+    const d = sState.data;
+    $("s-title").textContent = `${d.ticker} — social posts`;
+    $("s-company").textContent = d.company || "";
+    const facts = $("s-facts");
+    facts.replaceChildren();
+    const fact = (label, text) => { const row = el("div"); row.append(el("b", "", `${label}: `), document.createTextNode(text)); facts.append(row); };
+    fact("Window", `${when(d.window_start)} – ${when(d.window_end)} (last 48 hours, fixed at retrieval)`);
+    fact("Retrieved", clock.format(new Date(d.retrieved_at)));
+    const responded = (d.providers || []).filter((p) => p.state === "ok").length;
+    fact("Posts", `${count.format(d.posts.length)} from ${responded} source${responded === 1 ? "" : "s"} that responded`);
+    socialNotes(d);
+
+    const filter = $("s-filter");
+    filter.replaceChildren(new Option(`All sources (${d.posts.length})`, "all"));
+    for (const p of d.providers || []) if (p.shown) filter.append(new Option(`${p.label} (${p.shown})`, p.name));
+    filter.value = sState.filter;
+    renderFeed();
+
+    const list = $("s-prov");
+    list.replaceChildren();
+    for (const p of d.providers || []) {
+      const li = el("li");
+      const head = el("div");
+      const state = p.state === "ok" ? (p.message ? `Responded (${p.message})` : "Responded")
+        : p.state === "unavailable" ? `Unavailable: ${p.message}` : (p.message || "Not available");
+      head.append(el("span", "name", p.label), document.createTextNode(" · "), el("span", `state-${p.state}`, state));
+      li.append(head);
+      if (p.state === "ok") li.append(el("div", "sub", `${p.returned} returned, ${p.shown} shown${p.capped ? " · retrieval limit reached" : ""}`));
+      li.append(el("div", "sub", p.limits));
+      list.append(li);
+    }
+    $("s-providers").open = false;
+    $("s-fine").replaceChildren(
+      el("div", "", "Sentiment: none of the connected sources supplies a sentiment label or score, so every post shows " +
+        "“Not scored” (not neutral). Engagement counts are shown as each source reports them; Hacker News and YouTube " +
+        "counts of zero are omitted because those sources do not distinguish zero from unreported."),
+      el("div", "", "Posts are user-generated and unverified, ordered by publication time. Not investment advice."));
+  }
+
+  function filteredPosts() {
+    const posts = sState.data ? sState.data.posts : [];
+    return sState.filter === "all" ? posts : posts.filter((p) => p.type === sState.filter);
+  }
+  function renderFeed() {
+    $("s-feed").replaceChildren();
+    const posts = filteredPosts();
+    for (const post of posts.slice(0, sState.limit)) $("s-feed").append(postNode(post));
+    updateMore(posts.length);
+  }
+  function updateMore(total) {
+    const shown = Math.min(sState.limit, total);
+    $("s-count").textContent = `Showing ${count.format(shown)} of ${count.format(total)} loaded posts, newest first`;
+    $("s-more").hidden = shown >= total;
+    $("s-more-count").textContent = `${count.format(total - shown)} more loaded`;
+  }
+  $("s-more-btn").addEventListener("click", () => {
+    const posts = filteredPosts();
+    const start = sState.limit;
+    sState.limit += S_PAGE;
+    for (const post of posts.slice(start, sState.limit)) $("s-feed").append(postNode(post));
+    updateMore(posts.length);
+  });
+  $("s-filter").addEventListener("change", () => {
+    sState.filter = $("s-filter").value;
+    sState.limit = S_PAGE;
+    renderFeed();
+  });
+  $("s-refresh").addEventListener("click", () => loadSocial(currentTicker));
+
+  function postNode(p) {
+    const li = el("li", "post");
+    const meta = el("div", "post-meta");
+    meta.append(el("span", "badge", S_LABELS[p.type] || p.source || p.type));
+    if (p.type === "reddit" && p.source) meta.append(el("span", "", p.source));
+    meta.append(el("span", "author", p.author || "unknown"));
+    if (p.author_flair) meta.append(el("span", "", p.author_flair));
+    const time = el("time", "", when(p.published_at));
+    time.dateTime = p.published_at;
+    time.title = `${p.published_at} (UTC)`;
+    meta.append(time, el("span", "", ago(p.published_at)));
+    li.append(meta);
+    if (p.context) li.append(el("div", "post-context", `${p.is_megathread ? "Discussion thread" : "Thread"}: ${p.context}`));
+    const titled = p.type === "youtube" || p.type === "hackernews";
+    if (titled && p.title) li.append(el("div", "post-title", p.title));
+    const text = p.text || (titled ? "" : p.title);
+    if (text) {
+      const body = el("p", "post-text", text);
+      li.append(body);
+      if (text.length > 480 || text.split("\n").length > 7) {
+        body.classList.add("clamped");
+        const toggle = el("button", "linkish", "Show full text");
+        toggle.type = "button";
+        toggle.setAttribute("aria-expanded", "false");
+        toggle.addEventListener("click", () => {
+          const open = !body.classList.toggle("clamped");
+          toggle.textContent = open ? "Show less" : "Show full text";
+          toggle.setAttribute("aria-expanded", String(open));
+        });
+        li.append(toggle);
+      }
+    }
+    const foot = el("div", "post-foot");
+    const sentiment = p.sentiment ? el("span", "sent", p.sentiment) : el("span", "sent sent-none", "Not scored");
+    sentiment.title = p.sentiment ? "Sentiment as supplied by the source" : "No sentiment label or score was supplied for this post";
+    foot.append(sentiment);
+    for (const c of p.engagement || []) foot.append(el("span", "", `${count.format(c.value)} ${c.label}`));
+    const url = safeUrl(p.url);
+    if (url) {
+      const link = el("a", "", `Open on ${S_LABELS[p.type] || p.source} ↗`);
+      link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer";
+      foot.append(link);
+    }
+    li.append(foot);
+    if (p.top_comments && p.top_comments.length) {
+      const details = el("details");
+      details.append(el("summary", "", `Top comments (${p.top_comments.length})`));
+      const list = el("ul");
+      for (const c of p.top_comments) {
+        const item = el("li", "", c.text);
+        item.append(el("small", "", `${c.author} · ${count.format(c.likes)} likes · ${when(c.published_at)}`));
+        list.append(item);
+      }
+      details.append(list);
+      li.append(details);
+    }
+    return li;
+  }
+
+  /* ---------- Start ---------- */
+  // The server resolves the symbol for each side (the digest covers US listings only).
+  function go(raw) {
+    const ticker = raw.trim().toUpperCase();
+    if (!ticker) return;
+    currentTicker = ticker;
+    $("ticker").value = ticker;
+    setUrl();
+    runAll(ticker);
+    socialTickerChanged();
+  }
+  $("search").addEventListener("submit", (event) => { event.preventDefault(); go($("ticker").value); });
+  $("ticker").addEventListener("input", syncButton);
+  for (const box of ["examples", "m-examples", "s-examples"]) {
+    for (const example of ["NVDA", "AAPL", "NASDAQ:MSFT", "JPM", "AMZN"]) {
+      const chip = el("button", "", example);
+      chip.type = "button";
+      chip.addEventListener("click", () => go(example));
+      $(box).append(chip);
+    }
+  }
+  const startup = new URLSearchParams(location.search);
+  const initial = startup.get("t");
+  view("empty");
+  mView("empty");
+  sView("empty");
+  selectTab(TABS.includes(startup.get("tab")) ? startup.get("tab") : "digest");
+  if (initial) go(initial); else $("ticker").focus();
+})();
+</script>
+</body>
+</html>
