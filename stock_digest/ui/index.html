@@ -38,7 +38,9 @@
   .cost-agents, .cost-detail { color: var(--muted); font-size: 12px; margin-top: 8px; overflow-wrap: anywhere; }
   .search-cost summary { cursor: pointer; margin-top: 10px; color: var(--muted); font-size: 12px; }
   a { color: inherit; }
-  .app { max-width: 480px; margin: 0 auto; padding-block: 20px 56px; }
+  .app { max-width: 880px; margin: 0 auto; padding-block: 20px 56px; }
+  .search-header, #panel-digest, .search-cost { max-width: 480px; margin-inline: auto; }
+  #panel-social { max-width: 680px; margin-inline: auto; }
 
   /* Brand + search */
   .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; color: var(--muted); font-size: 13px; letter-spacing: .02em; }
@@ -152,8 +154,7 @@
   .error small { display: block; color: var(--muted); margin-top: 4px; }
 
   /* Tabs */
-  .app.wide { max-width: 880px; }
-  .tabs { display: flex; gap: 4px; padding: 4px; margin-bottom: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; }
+  .tabs { display: flex; gap: 4px; padding: 4px; margin-top: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; }
   .tabs button {
     flex: 1; min-height: 34px; padding: 4px 6px; border: 0; border-radius: 999px; background: transparent; color: var(--muted);
     font: 600 13.5px/1.2 var(--font); cursor: pointer;
@@ -198,7 +199,6 @@
   }
   .ghost:hover { border-color: var(--muted); }
   /* Social Sentiment */
-  .app.mid { max-width: 680px; }
   .s-head { margin-top: 22px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
   .s-head .ghost:disabled { opacity: .5; cursor: default; }
   .s-facts { color: var(--muted); font-size: 12.5px; margin-top: 8px; display: grid; gap: 2px; }
@@ -211,9 +211,35 @@
     height: 30px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface);
     color: var(--text); font: 500 12.5px var(--font);
   }
-  .feed { list-style: none; margin: 10px 0 0; padding: 0; }
+  .feed { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 14px; }
   .feed.previous { opacity: .55; }
-  .post { border-top: 1px solid var(--line); padding: 14px 0; }
+  .post {
+    --source-color: var(--muted);
+    border: 1px solid var(--line); border-left: 3px solid var(--source-color);
+    border-radius: var(--radius); background: var(--surface); padding: 16px; min-width: 0;
+  }
+  .post[data-source="x"] { --source-color: #f5f6f7; }
+  .post[data-source="reddit"] { --source-color: #ff7043; }
+  .post[data-source="stocktwits"] { --source-color: #5b9dff; }
+  .post[data-source="hackernews"] { --source-color: #ffb347; }
+  .post[data-source="youtube"] { --source-color: #ff4055; }
+  .post .badge { color: var(--source-color); border-color: var(--source-color); }
+  .video-preview {
+    position: relative; display: block; margin-top: 12px; aspect-ratio: 16 / 9; overflow: hidden;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); text-decoration: none;
+  }
+  .video-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .video-play {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    display: grid; place-items: center; width: 58px; height: 42px; border-radius: 12px;
+    color: #fff; background: #e62117; font-size: 23px; padding-left: 3px;
+  }
+  .video-caption {
+    position: absolute; inset: auto 0 0; padding: 24px 12px 10px;
+    background: linear-gradient(transparent, rgba(0, 0, 0, .9)); color: #fff; font-size: 12px;
+  }
+  .video-preview:hover .video-play { background: #ff0000; }
+  .video-preview:focus-visible { outline: 2px solid var(--source-color); outline-offset: 3px; }
   .post-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--muted); font-size: 12.5px; }
   .post-meta .author { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
   .post-meta time { font-variant-numeric: tabular-nums; }
@@ -252,24 +278,19 @@
 </head>
 <body>
 <main class="app">
+  <header class="search-header">
   <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>Stock Digest</div>
-  <nav class="tabs" role="tablist" aria-label="Views">
-    <button type="button" role="tab" id="tab-digest" aria-controls="panel-digest" aria-selected="true">Digest</button>
-    <button type="button" role="tab" id="tab-material" aria-controls="panel-material" aria-selected="false" tabindex="-1">Material news</button>
-    <button type="button" role="tab" id="tab-social" aria-controls="panel-social" aria-selected="false" tabindex="-1">Social Sentiment</button>
-  </nav>
   <form id="search" class="search" autocomplete="off">
     <input id="ticker" name="ticker" placeholder="Ticker, e.g. NVDA or NASDAQ:MSFT" maxlength="16" spellcheck="false"
            autocapitalize="characters" aria-label="Stock ticker" required>
     <button id="go" type="submit">Search</button>
   </form>
-  <div class="options" id="m-options" hidden>
-    <span>Last 7 days</span>
-    <label>Max <select id="m-max" aria-label="Maximum results">
-      <option value="" selected>All qualifying</option><option value="3">3</option><option value="5">5</option>
-      <option value="10">10</option></select></label>
-    <span id="m-tz"></span>
-  </div>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button type="button" role="tab" id="tab-digest" aria-controls="panel-digest" aria-selected="true">Digest</button>
+    <button type="button" role="tab" id="tab-material" aria-controls="panel-material" aria-selected="false" tabindex="-1">Material news</button>
+    <button type="button" role="tab" id="tab-social" aria-controls="panel-social" aria-selected="false" tabindex="-1">Social Sentiment</button>
+  </nav>
+  </header>
 
   <div id="panel-digest" role="tabpanel" aria-labelledby="tab-digest">
   <section id="empty" class="card">
@@ -322,6 +343,13 @@
   </div>
 
   <div id="panel-material" role="tabpanel" aria-labelledby="tab-material" hidden>
+    <div class="options" id="m-options">
+      <span>Last 7 days</span>
+      <label>Max <select id="m-max" aria-label="Maximum results">
+        <option value="" selected>All qualifying</option><option value="3">3</option><option value="5">5</option>
+        <option value="10">10</option></select></label>
+      <span id="m-tz"></span>
+    </div>
     <section id="m-empty" class="card">
       <p class="hint">Material company news: the potentially stock-moving developments for one company in a recent
         window, one entry per development, each with its source. Roundups, minor releases and analyst chatter are
@@ -688,9 +716,6 @@
       $(`panel-${tab}`).hidden = tab !== name;
     }
     if (focus) $(`tab-${name}`).focus();
-    document.querySelector(".app").classList.toggle("wide", name === "material");
-    document.querySelector(".app").classList.toggle("mid", name === "social");
-    $("m-options").hidden = name !== "material";
     if (name === "digest" && !$("empty").hidden) idleDots.start(); else idleDots.stop();
     syncButton();
     setUrl();
@@ -1173,6 +1198,7 @@
 
   function postNode(p) {
     const li = el("li", "post");
+    li.dataset.source = p.type;
     const meta = el("div", "post-meta");
     meta.append(el("span", "badge", S_LABELS[p.type] || p.source || p.type));
     if (p.type === "reddit" && p.source) meta.append(el("span", "", p.source));
@@ -1186,6 +1212,10 @@
     if (p.context) li.append(el("div", "post-context", `${p.is_megathread ? "Discussion thread" : "Thread"}: ${p.context}`));
     const titled = p.type === "youtube" || p.type === "hackernews";
     if (titled && p.title) li.append(el("div", "post-title", p.title));
+    if (p.type === "youtube") {
+      const preview = youtubePreview(p);
+      if (preview) li.append(preview);
+    }
     const text = p.text || (titled ? "" : p.title);
     if (text) {
       const body = el("p", "post-text", text);
@@ -1228,6 +1258,42 @@
       li.append(details);
     }
     return li;
+  }
+
+  function youtubePreview(post) {
+    // Only use a validated YouTube video ID to construct the thumbnail URL.
+    let videoId;
+    try {
+      const url = new URL(post.url);
+      if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+      const host = url.hostname.toLowerCase();
+      if (host === "youtu.be") videoId = url.pathname.split("/")[1];
+      else if (["youtube.com", "www.youtube.com", "m.youtube.com"].includes(host)) {
+        videoId = url.pathname === "/watch" ? url.searchParams.get("v")
+          : /^\/(?:shorts|embed|live)\/([^/]+)/.exec(url.pathname)?.[1];
+      }
+    } catch { return null; }
+    if (!/^[A-Za-z0-9_-]{11}$/.test(videoId || "")) return null;
+    const link = el("a", "video-preview");
+    link.href = `https://www.youtube.com/watch?v=${videoId}`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.setAttribute("aria-label", `Watch ${post.title || "video"} on YouTube (opens in a new tab)`);
+    const thumbnail = el("img");
+    thumbnail.alt = "";
+    thumbnail.loading = "lazy";
+    thumbnail.decoding = "async";
+    thumbnail.referrerPolicy = "no-referrer";
+    thumbnail.src = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+    thumbnail.addEventListener("error", () => thumbnail.remove(), { once: true });
+    thumbnail.addEventListener("load", () => {
+      // YouTube can return a small placeholder even when the request succeeds.
+      if (thumbnail.naturalWidth <= 120) thumbnail.remove();
+    }, { once: true });
+    const play = el("span", "video-play", "▶");
+    play.setAttribute("aria-hidden", "true");
+    link.append(thumbnail, play, el("span", "video-caption", "Watch on YouTube ↗"));
+    return link;
   }
 
   /* ---------- Start ---------- */
