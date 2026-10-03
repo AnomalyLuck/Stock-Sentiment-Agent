@@ -5,7 +5,7 @@ from typing import get_args
 from agents import Agent, ModelSettings, OpenAIResponsesModel, WebSearchTool
 from openai import AsyncOpenAI
 
-from .models import EXCLUDED_CATEGORIES, Category, Consolidation, SearchProfile, SourceType, Status, SubjectRole
+from .models import Category, Consolidation, SearchProfile, SourceType, Status, SubjectRole
 
 SEARCH_TIMEOUT_SECONDS = 75.0
 VERIFY_TIMEOUT_SECONDS = 120.0
@@ -13,9 +13,9 @@ CONSOLIDATE_TIMEOUT_SECONDS = 90.0
 VERIFY_TOOL_CALLS = 5
 
 # Enum values in the JSON examples come from the contracts in models.py, so the prompts cannot drift.
-_MATERIAL = "|".join(c for c in get_args(Category) if c not in EXCLUDED_CATEGORIES)
-_EXCLUDED = "|".join(c for c in get_args(Category) if c in EXCLUDED_CATEGORIES)
-CATEGORY_VALUES = f"{_MATERIAL}, or excluded: {_EXCLUDED}"
+# Keep them as bare "a|b|c" lists: models copy any label into the field (an "excluded:" prefix
+# once invalidated every default-excluded candidate). Python decides exclusions, not the prompt.
+CATEGORY_VALUES = "|".join(get_args(Category))
 STATUS_VALUES = "|".join(get_args(Status))
 SUBJECT_ROLES = "|".join(get_args(SubjectRole))
 SOURCE_TYPES = "|".join(get_args(SourceType))

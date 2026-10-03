@@ -5,9 +5,9 @@ re-checked in Python (see gates.py). Profiles and verified evidence may be cache
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, BeforeValidator, ConfigDict, Field
 
 Category = Literal[
     # Potentially material
@@ -24,6 +24,19 @@ EXCLUDED_CATEGORIES = {
 }
 # Categories where a disclosed amount is the main evidence of scale.
 SIZE_GATED_CATEGORIES = {"contract", "partnership"}
+
+
+def _bare_category(value):
+    """Accept a label copied from a prompt example, e.g. "excluded: routine_product"."""
+    if isinstance(value, str):
+        value = value.strip()
+        if value.lower().startswith("excluded:"):
+            value = value.split(":", 1)[1].strip()
+    return value
+
+
+# A category as written by a model. Internal records such as Entry use Category directly.
+ModelCategory = Annotated[Category, BeforeValidator(_bare_category)]
 
 Status = Literal[
     "announced", "authorized", "agreed", "approved", "completed", "launched", "filed", "ruled",
@@ -89,7 +102,7 @@ class Candidate(Contract):
     new_fact: str | None = None
     is_rehash: bool = False
     likely_in_window: bool = True       # the model's reading when no publication date is shown
-    category: Category = "other"
+    category: ModelCategory = "other"
     status: Status = "reported"
     subject_role: SubjectRole = "incidental"
     subject_rationale: str = ""
@@ -109,7 +122,7 @@ class VerifiedEvent(Contract):
     page_accessible: bool = True
     headline: str = Field(default="", max_length=140)
     why: str = Field(default="", max_length=700)
-    category: Category = "other"
+    category: ModelCategory = "other"
     status: Status = "reported"
     primary_url: str | None = None
     primary_publisher: str | None = None

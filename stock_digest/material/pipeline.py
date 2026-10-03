@@ -9,7 +9,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 from agents import RunConfig, Runner
@@ -31,6 +31,7 @@ from .models import (EVIDENCE_RANK, REPORTED_STATUSES, STATUS_LABELS, CachedVeri
                      SourceRef, VerifiedEvent)
 
 SEARCH_CONCURRENCY = 8
+DAILY_SEARCHES = 7          # one dated search per window day, newest first
 FEED_COUNT = 40
 MAX_FEED_CANDIDATES = 80
 VERIFY_CONCURRENCY = 8
@@ -45,6 +46,10 @@ REGULATORS = ["sec.gov", "ftc.gov", "justice.gov", "commerce.gov", "bis.doc.gov"
 
 class ResearchUnavailable(DigestError):
     """Search could not be performed; never reported as 'no news'."""
+
+
+class FeedUnavailable(RuntimeError):
+    """Yahoo returned no headlines at all, which in practice means it is refusing requests."""
 
 
 @dataclass(frozen=True)
@@ -158,6 +163,9 @@ def fetch_feed_leads(symbol: str, window: Window) -> list[dict]:
 
     _configure_yahoo()
     rows = yf.Ticker(symbol).get_news(count=FEED_COUNT, tab="news")
+    if not isinstance(rows, list) or not rows:
+        # yfinance returns an empty list rather than raising when Yahoo answers HTTP 429.
+        raise FeedUnavailable("Yahoo Finance returned no headlines")
     leads, seen = [], set()
     for row in rows if isinstance(rows, list) else []:
         content = row.get("content") if isinstance(row, dict) else None
@@ -197,19 +205,32 @@ def official_domains(issuer: Issuer, profile: SearchProfile) -> list[str]:
 
 
 def query_plan(issuer: Issuer, profile: SearchProfile, window: Window) -> list[tuple[str, str]]:
-    """Eight initial searches; expand only when the first pass exposes coverage gaps."""
+    """Eight topic searches plus one dated search per window day; follow-ups fill gaps.
+
+    Topic searches over a heavily covered company return its biggest or evergreen stories.
+    Dated searches ("Tesla news September 28, 2026") surface each day's coverage, such as a
+    product event being rescheduled, and the product search uses the verbs such news carries.
+    """
     name = core_name(issuer.company)
     ticker = issuer.ticker
-    return [
+    plan = [
         ("broad", f"{name} ({ticker}) news"),
         ("official", f"{name} announces"),
         ("outlets", f"{name} Reuters OR Bloomberg news this week"),
         ("outlets", f"{name} CNBC OR Wall Street Journal OR Financial Times latest news"),
         ("capital", f"{name} earnings guidance buyback dividend financing"),
-        ("deals", f"{name} acquisition merger investment reportedly in talks"),
-        ("products", f"{name} major product launch contract partnership"),
+        ("deals", f"{name} acquisition merger investment contract partnership reportedly in talks"),
+        ("products", f"{name} unveils OR launches OR delays OR reschedules product news this week"),
         ("risks", f"{name} regulatory legal incident leadership restructuring news"),
     ]
+    first = window.start.astimezone(window.zone).date()
+    day = window.end.astimezone(window.zone).date()
+    for _ in range(DAILY_SEARCHES):
+        if day < first:
+            break
+        plan.append(("daily", f"{name} news {day.strftime('%B')} {day.day}, {day.year}"))
+        day -= timedelta(days=1)
+    return plan
 
 
 def followup_plan(issuer: Issuer, profile: SearchProfile, queries: list[dict],
@@ -375,15 +396,17 @@ async def run_material(request: MaterialRequest, api_key: str, models: dict, sta
             return new_keys
 
         plan = query_plan(issuer, profile, window)
+        feed_unavailable = False
         try:
             leads = await asyncio.wait_for(asyncio.to_thread(fetch_feed_leads, issuer.symbol, window), timeout=20)
         except Exception as exc:
             leads = []
+            feed_unavailable = True
             diagnostics.append(f"Yahoo Finance news feed unavailable ({type(exc).__name__}).")
         leads = leads[:FEED_COUNT]
         registry.update(feed_sources(leads, datetime.now(UTC)))
-        stage(f"Searching {len(plan)} queries (broad news, official announcements, material event types, major "
-              f"outlets) and classifying {len(leads)} dated Yahoo Finance headline(s)…")
+        stage(f"Searching {len(plan)} queries (broad news, official announcements, major outlets, material event "
+              f"types and one per window day) and classifying {len(leads)} dated Yahoo Finance headline(s)…")
         first_keys = absorb(await gather_or_cancel(
             *(discover(p, q) for p, q in plan),
             *([discover("feed", f"{core_name(issuer.company)} latest company developments", leads)] if leads else [])))
@@ -519,6 +542,9 @@ async def run_material(request: MaterialRequest, api_key: str, models: dict, sta
     notes = []
     if counts["search_failed"] and counts["search_failed"] * 4 >= counts["search_ok"] + counts["search_failed"]:
         notes.append(f"{counts['search_failed']} of {counts['search_ok'] + counts['search_failed']} searches failed, so coverage may be incomplete.")
+    if feed_unavailable:
+        notes.append("Yahoo Finance returned no headlines, possibly because it is limiting requests, "
+                     "so this run relied on web search alone.")
     if any(q["purpose"] == "feed" and (q["failure"] or q["invalid"]) for q in record["queries"]):
         notes.append("Some feed headlines could not be classified; feed coverage may be incomplete.")
     if any(q["purpose"] != "feed" and q["invalid"] for q in record["queries"]):

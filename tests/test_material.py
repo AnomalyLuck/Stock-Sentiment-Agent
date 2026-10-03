@@ -4,11 +4,14 @@ Numbers in test names refer to the specification's acceptance criteria.
 """
 import asyncio
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
+import stock_digest.material.agents as material_agents
 import stock_digest.material.pipeline as pipeline
 import stock_digest.material.cache as material_cache
 from stock_digest.market import InputError
@@ -16,7 +19,8 @@ from stock_digest.material.gates import (Cluster, apply_merges, candidate_gate, 
                                          group_candidates, make_window, mechanism_reason, placement, size_reason,
                                          status_language, time_gate)
 from stock_digest.material.identity import _clarify, parse_symbol, resolve_timezone
-from stock_digest.material.models import Candidate, Consolidation, ClusterMerge, Issuer, SearchProfile, SourceRef
+from stock_digest.material.models import (Candidate, Consolidation, ClusterMerge, Issuer, SearchProfile, SourceRef,
+                                          VerifiedEvent)
 from stock_digest.material.render import markdown
 
 RUN_AT = datetime(2026, 9, 30, 18, 0, tzinfo=UTC)
@@ -486,15 +490,15 @@ def test_feed_leads_are_grounded_dated_discovery_sources(monkeypatch):
 def test_staged_discovery_and_repeat_run_call_counts(monkeypatch):
     calls = install_fakes(monkeypatch)
     first = run()
-    assert first.record["agent_runs"] == {
-        "profile": 1, "discovery": 8, "feed": 0, "consolidation": 1, "verification": 2,
+    assert first.record["agent_runs"] == {           # 8 topic searches + 7 dated daily searches
+        "profile": 1, "discovery": 15, "feed": 0, "consolidation": 1, "verification": 2,
     }
     calls.clear()
     second = run()
     assert second.record["agent_runs"] == {
-        "profile": 0, "discovery": 8, "feed": 0, "consolidation": 1, "verification": 0,
+        "profile": 0, "discovery": 15, "feed": 0, "consolidation": 1, "verification": 0,
     }
-    assert len(calls) == 9
+    assert len(calls) == 16
     assert second.record["cache_hits"] == {"profile": 1, "verification": 2}
     assert first.entries == second.entries
     assert all(e["verification_cached"] for e in second.record["events"])
@@ -542,7 +546,7 @@ def test_followups_only_target_gaps_and_are_bounded():
     profile = SearchProfile(brands=["GeForce"])
     rows = [cand(f"https://news.example/{i}", development_key=f"event-{i}") for i in range(3)]
     queries = [{"purpose": "official", "query": "NVIDIA announces", "failure": None, "invalid": 0}]
-    assert len(pipeline.query_plan(MEGACAP, profile, WINDOW)) == 8
+    assert len(pipeline.query_plan(MEGACAP, profile, WINDOW)) == 15
     assert pipeline.followup_plan(MEGACAP, profile, queries, rows, [gate(c) for c in rows]) == []
     assert len(pipeline.followup_plan(MEGACAP, profile, queries, [], [])) == 2
     queries[0]["failure"] = "timeout"
@@ -550,6 +554,55 @@ def test_followups_only_target_gaps_and_are_bounded():
     follow = pipeline.followup_plan(MEGACAP, profile, queries, [pending], [gate(pending)])
     assert len(follow) == 2 and follow[0] == ("official", "NVIDIA announces")
     assert follow[1][0] == "undated"
+
+
+def test_plan_searches_each_window_day_and_words_product_search_like_news():
+    plan = pipeline.query_plan(MEGACAP, SearchProfile(), WINDOW)
+    # Sep 23 14:00 EDT to Sep 30 14:00 EDT: the seven most recent local days, newest first.
+    assert [q for p, q in plan if p == "daily"] == [f"NVIDIA news September {day}, 2026" for day in range(30, 23, -1)]
+    queries = dict(plan)
+    assert queries["products"] == "NVIDIA unveils OR launches OR delays OR reschedules product news this week"
+    assert "contract partnership" in queries["deals"]          # moved from the old product search
+    short = make_window(RUN_AT, 30, "America/New_York")        # Sep 29 08:00 EDT to Sep 30 14:00 EDT
+    assert [q for p, q in pipeline.query_plan(MEGACAP, SearchProfile(), short) if p == "daily"] == [
+        "NVIDIA news September 30, 2026", "NVIDIA news September 29, 2026"]
+
+
+def test_category_label_copied_from_a_prompt_example_is_accepted():
+    row = {**cand().model_dump(), "category": "excluded: unsupported_speculation"}
+    text = "```json\n" + json.dumps({"status": "findings", "candidates": [row]}) + "\n```"
+    rows, invalid, _ = pipeline.parse_candidates(text)
+    assert invalid == 0 and rows[0].category == "unsupported_speculation"
+    assert VerifiedEvent.model_validate({"verified": True, "category": "excluded:analyst_commentary"}).category \
+        == "analyst_commentary"
+    with pytest.raises(ValidationError):
+        Candidate.model_validate({**row, "category": "excluded: not_a_category"})
+
+
+def test_prompt_examples_list_bare_enum_values():
+    for prompt in (material_agents.DISCOVERY, material_agents.FEED, material_agents.VERIFY):
+        assert "excluded:" not in prompt
+
+
+def test_empty_yahoo_feed_is_disclosed_not_treated_as_no_news(monkeypatch):
+    install_fakes(monkeypatch)
+
+    def refused(symbol, window):
+        raise pipeline.FeedUnavailable("Yahoo Finance returned no headlines")
+
+    monkeypatch.setattr(pipeline, "fetch_feed_leads", refused)
+    result = run()
+    assert result.entries and "Yahoo Finance returned no headlines" in result.coverage_note
+    install_fakes(monkeypatch)                     # a working feed with nothing in the window adds no note
+    assert "Yahoo" not in (run().coverage_note or "")
+
+
+def test_fetch_feed_leads_raises_when_yahoo_returns_nothing(monkeypatch):
+    fake = SimpleNamespace(Ticker=lambda symbol: SimpleNamespace(get_news=lambda count, tab: []))
+    monkeypatch.setitem(sys.modules, "yfinance", fake)
+    monkeypatch.setattr("stock_digest.market._configure_yahoo", lambda: None)
+    with pytest.raises(pipeline.FeedUnavailable):
+        pipeline.fetch_feed_leads("NVDA", WINDOW)
 
 
 def test_changed_evidence_reverifies_only_affected_event(monkeypatch):

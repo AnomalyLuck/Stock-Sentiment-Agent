@@ -151,22 +151,28 @@ match. Funds and other non-company listings are rejected.
 1. **Resolve and profile.** The ticker is resolved to the issuer, and one search builds a
    profile: aliases, brands, subsidiaries, and investor-relations and newsroom pages.
    Successful profiles are reused for seven days, keyed by issuer identity, model and prompt.
-2. **Discovery.** Eight searches run on every request, up to eight at once:
+2. **Discovery.** Fifteen searches run on every request, up to eight at once:
    - one broad search and one restricted to the company's domains, newswires and regulators;
    - two outlet searches covering Reuters/Bloomberg and CNBC/WSJ/FT;
-   - four grouped topic searches covering earnings/capital, deals/reported talks,
-     products/contracts/partnerships, and regulation/legal/incidents/leadership.
+   - four grouped topic searches covering earnings/capital, deals/contracts/partnerships/
+     reported talks, product news in the words it is reported with ("unveils OR launches OR
+     delays OR reschedules"), and regulation/legal/incidents/leadership;
+   - one dated search per window day for the seven most recent days, such as "NVIDIA news
+     September 28, 2026". Topic searches over a heavily covered company return its biggest
+     or evergreen stories; dated searches surface each day's coverage.
 
    Up to 40 dated Yahoo Finance headlines are classified in **one separate model call with
    no web tools**. The compact classifications reference lead indexes; Python attaches the
    provider's URL, title, summary and timestamp, so the model cannot replace that metadata.
-   Missing or invalid classifications are disclosed as incomplete feed coverage.
+   Missing or invalid classifications are disclosed as incomplete feed coverage. If Yahoo
+   returns no headlines at all, usually because it is rate-limiting requests, the coverage
+   note says the run relied on web search alone.
 
    At most two additional searches run if time allows, prioritizing failed or malformed
    queries, undated potentially material leads, then sparse coverage (fewer than three
    candidate development groups). Sparse coverage prompts brand/subsidiary and alias
-   searches. There is no automatic seven-query daily sweep. This is a coverage heuristic,
-   not a guarantee that every important story was found.
+   searches. This is a coverage heuristic, not a guarantee that every important story was
+   found.
 3. **Gates in Python.** Each extracted candidate must pass four gates:
    - **Subject:** the company is the main subject, or a named counterparty in a
      partnership, contract, investment, acquisition or financing deal. Roundups, lists,
@@ -234,13 +240,13 @@ until the verification expires. Simultaneous requests can still duplicate uncach
 - Model judgment and search results vary between runs, so the same ticker can yield
   different entries. Python rules, not the models, make the final inclusion decisions.
 - The wording checks for reported items apply only to English output.
-- A material run starts with eight discovery calls, at most one profile call, one feed
+- A material run starts with fifteen discovery calls, at most one profile call, one feed
   classification, two follow-ups and one consolidation, plus up to 24 uncached event
-  verifications: **at most 37 agent runs before SDK retries/extra turns**. For example,
-  a cached profile, eight searches, one feed batch, one consolidation and five new events
-  take 15 agent runs with no follow-ups. Reused verifications reduce this further.
-  The digest adds its own calls. Latency and live news coverage have not been benchmarked
-  for the reduced search plan; keep `STOCK_DIGEST_TIMEOUT` at 360 seconds or more.
+  verifications: **at most 44 agent runs before SDK retries/extra turns**. For example,
+  a cached profile, fifteen searches, one feed batch, one consolidation and five new events
+  take 22 agent runs with no follow-ups. Reused verifications reduce this further.
+  The digest adds its own calls. Latency has not been benchmarked for this search plan;
+  keep `STOCK_DIGEST_TIMEOUT` at 360 seconds or more.
 
 The filters were relaxed on 2026-09-30 after a two-result NVDA run. The changes:
 - model-stated dates are accepted when search metadata has none;
@@ -251,6 +257,18 @@ The filters were relaxed on 2026-09-30 after a two-result NVDA run. The changes:
 
 Recall was raised with outlet-led and per-day searches and the Yahoo feed. The
 lookback selector was removed; the window is fixed at 7 days.
+
+Recall fixes (2026-10-01), after a TSLA run missed Tesla's September 28 postponement of the
+Roadster reveal. Live replays of the discovery step showed none of the eight searches surfaced
+it, while a dated search and a news-worded product search both did, and it passed every gate:
+- the seven per-day searches, dropped when the plan was cut to eight, are back;
+- the product search uses news verbs, and contracts and partnerships moved to the deals search;
+- a prompt example listed categories as "…, or excluded: …", so the model wrote
+  "excluded: analyst_commentary". Those candidates failed validation and the follow-up
+  searches were spent retrying them. The example now lists bare values, and the parser
+  strips the label;
+- yfinance returns an empty list rather than an error when Yahoo answers HTTP 429. An
+  empty feed now adds a coverage note.
 
 Tests: `tests/test_material.py` covers the specification's acceptance criteria offline
 (deduplication of copies and tracking URLs, two developments in one article, roundups and
