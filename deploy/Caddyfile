@@ -1,0 +1,23 @@
+# Caddy in front of the Stock Digest UI on a server: HTTPS plus a password per person.
+#
+# The app keeps listening on 127.0.0.1:8765 only (run `stock-digest --no-browser`), so
+# Caddy is the only way in. Every search spends the server's OpenAI and social-provider
+# credits; keep basic_auth on.
+#
+# 1. Replace digest.example.com with your domain. Its DNS A record must point at the
+#    server, and ports 80 and 443 must be open; Caddy obtains and renews the certificate.
+# 2. For each person, run `caddy hash-password` and add a line: <username> <hash>.
+#    The placeholder below is not a valid hash, so it lets nobody in until you replace it.
+# 3. Install as /etc/caddy/Caddyfile, check it with
+#    `caddy validate --config /etc/caddy/Caddyfile`, then `systemctl reload caddy`.
+#
+# Progress streams as newline-delimited JSON without a Content-Length, which Caddy flushes
+# immediately. Do not add `flush_interval -1`: in that mode Caddy keeps the backend request
+# running after the browser disconnects, so an abandoned search would keep spending.
+
+digest.example.com {
+	basic_auth {
+		replace-me REPLACE_WITH_OUTPUT_OF_caddy_hash-password
+	}
+	reverse_proxy 127.0.0.1:8765
+}

@@ -16,7 +16,7 @@ from .market import DigestError, InputError
 from .models import Publication
 
 SETTINGS = ("OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_RESEARCH_MODEL", "OPENAI_VERIFY_MODEL",
-            "STOCK_DIGEST_TIMEOUT", "SEC_USER_AGENT", "STOCK_DIGEST_CACHE_DIR")
+            "STOCK_DIGEST_TIMEOUT", "SEC_USER_AGENT", "STOCK_DIGEST_CACHE_DIR", "STOCK_DIGEST_MAX_RUNS")
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class Settings:
     models: dict
     timeout: float
     verify: bool = True
+    max_runs: int = 3  # UI server: searches allowed at once
 
 
 class _ModelErrorFilter(logging.Filter):
@@ -49,13 +50,19 @@ def load_settings(*, verify: bool = True) -> Settings:
             raise ValueError
     except ValueError:
         raise InputError("STOCK_DIGEST_TIMEOUT must be a finite positive number of seconds.") from None
+    try:
+        max_runs = int(os.environ.get("STOCK_DIGEST_MAX_RUNS", "").strip() or "3")
+        if max_runs < 1:
+            raise ValueError
+    except ValueError:
+        raise InputError("STOCK_DIGEST_MAX_RUNS must be a whole number of at least 1.") from None
     model = os.environ.get("OPENAI_MODEL", "gpt-4.1").strip()
     if not model:
         raise InputError("OPENAI_MODEL cannot be empty.")
     models = {"writer": model,
               "research": os.environ.get("OPENAI_RESEARCH_MODEL", "").strip() or model,
               "verifier": os.environ.get("OPENAI_VERIFY_MODEL", "").strip() or DEFAULT_VERIFY_MODEL}
-    return Settings(api_key=api_key, models=models, timeout=timeout, verify=verify)
+    return Settings(api_key=api_key, models=models, timeout=timeout, verify=verify, max_runs=max_runs)
 
 
 _tracing_ready = False

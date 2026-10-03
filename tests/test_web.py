@@ -44,6 +44,7 @@ def test_page_is_served_with_a_strict_policy(server):
         body = response.read().decode()
         assert "Stock Digest" in body and "/api/run" in body
         assert "default-src 'none'" in response.headers["Content-Security-Policy"]
+        assert "img-src 'self' data: https://i.ytimg.com;" in response.headers["Content-Security-Policy"]  # thumbnails
         assert response.headers["X-Content-Type-Options"] == "nosniff"
 
 
@@ -173,3 +174,58 @@ def test_cost_updates_after_each_result_and_survives_a_deadline(monkeypatch, ser
     stream = events(base + "/api/run?ticker=SLOW")
     assert stream[-1]["type"] == "error" and stream[-1]["cost"]["complete"]
     assert stream[-1]["cost"]["partial"] and stream[-1]["cost"]["known_total_usd"] == pytest.approx(.0006)
+
+
+def test_runs_beyond_the_limit_are_refused_until_a_slot_frees(monkeypatch):
+    from stock_digest.web import BUSY
+
+    calls, started, release = [], threading.Event(), threading.Event()
+
+    def fake_combined(raw, settings, stage, done, **kwargs):
+        calls.append(raw)
+        if raw == "HOLD":
+            started.set()
+            release.wait(10)
+        elif raw == "BOOM":
+            raise DigestError("Yahoo Finance rate limit reached.")
+        return "https://example.com/trace"
+
+    monkeypatch.setattr(DigestHandler, "run_combined", staticmethod(fake_combined))
+    monkeypatch.setattr(DigestHandler, "run", staticmethod(lambda ticker, settings, stage: calls.append(ticker)))
+    httpd = make_server(Settings(api_key="sk-test", models={}, timeout=60, max_runs=1), port=0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        holder = threading.Thread(target=events, args=(base + "/api/run?ticker=HOLD",))
+        holder.start()
+        assert started.wait(10)
+        stream = events(base + "/api/run?ticker=NVDA")
+        assert [(e["type"], e["kind"], e["message"]) for e in stream] == [("error", "digest", BUSY),
+                                                                          ("error", "material", BUSY)]
+        assert stream[-1]["cost"]["complete"]
+        assert [(e["type"], e["message"]) for e in events(base + "/api/digest?ticker=NVDA")] == [("error", BUSY)]
+        release.set()
+        holder.join(10)
+        events(base + "/api/run?ticker=BOOM")      # a failed run frees its slot too
+        events(base + "/api/run?ticker=NVDA")
+        assert calls == ["HOLD", "BOOM", "NVDA"]
+    finally:
+        release.set()
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_the_run_limit_is_read_from_the_environment(monkeypatch, tmp_path):
+    from stock_digest.market import InputError
+    from stock_digest.runner import load_settings
+
+    monkeypatch.chdir(tmp_path)                       # no .env
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("STOCK_DIGEST_MAX_RUNS", raising=False)
+    assert load_settings().max_runs == 3
+    monkeypatch.setenv("STOCK_DIGEST_MAX_RUNS", " 5 ")
+    assert load_settings().max_runs == 5
+    for bad in ("0", "-1", "two", "1.5"):
+        monkeypatch.setenv("STOCK_DIGEST_MAX_RUNS", bad)
+        with pytest.raises(InputError, match="STOCK_DIGEST_MAX_RUNS"):
+            load_settings()

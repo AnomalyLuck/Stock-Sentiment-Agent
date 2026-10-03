@@ -16,7 +16,7 @@ Python 3.11 or newer is required (the system Python on some Macs is too old).
 ```sh
 python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[dev]"      # dev adds pytest
+python -m pip install -c requirements.lock -e ".[dev]"   # dev adds pytest; the lock pins tested versions
 
 export OPENAI_API_KEY='your-openai-key'
 export OPENAI_MODEL='gpt-4.1'                 # optional; writer model (default shown)
@@ -24,6 +24,7 @@ export OPENAI_RESEARCH_MODEL=''               # optional; defaults to OPENAI_MOD
 export OPENAI_VERIFY_MODEL='gpt-4.1-mini'     # optional; reviewer model (default shown)
 export STOCK_DIGEST_TIMEOUT='480'             # optional; whole-run deadline in seconds
 export SEC_USER_AGENT='Your Name you@example.com'  # optional; enables SEC EDGAR filings
+export STOCK_DIGEST_MAX_RUNS='3'              # optional; UI searches allowed at once
 ```
 
 The CLI reads `.env` from the current directory (see `.env.example`); exported
@@ -53,14 +54,39 @@ python -m pytest                  # offline test suite
 ```
 
 The UI is a single local page served by Python's standard library, bound to
-127.0.0.1 only; nothing is exposed to the network and the page makes no external
-requests. Type a ticker and press Search. One combined run starts: the material news
+127.0.0.1 only; nothing is exposed to the network. The page's only external requests
+are YouTube thumbnails from i.ytimg.com in the Social Sentiment tab. Type a ticker and
+press Search. One combined run starts: the material news
 agent (below) and the digest, which waits for the material results and uses them as
 evidence. Progress streams into each tab; the Material news tab fills first (about
 2.5 to 3 minutes) and the Digest tab shortly after (about 3 to 4 minutes in total).
 Starting another search or closing the tab abandons the current run. Stop the server
 with Ctrl-C. The terminal mode (`--terminal`) still runs the digest on its own, with
 its own seven searches, in one to two minutes.
+
+The server runs at most `STOCK_DIGEST_MAX_RUNS` searches at once (default 3), counting
+combined, digest-only and material-only runs. A search beyond that ends immediately
+with a "server is busy" error in each tab, before any model call. An abandoned run
+keeps its slot until its next progress update. Social Sentiment requests are not
+counted; they have their own daily provider budgets (see below).
+
+## Running on a server
+
+The UI server stays bound to 127.0.0.1. To reach it from other machines, put an
+authenticating HTTPS proxy in front: [`deploy/Caddyfile`](deploy/Caddyfile) does this
+with Caddy (automatic TLS and a `basic_auth` password per person), with setup steps in
+its comments. Without a password, anyone who finds the address can run searches on your
+OpenAI and social-provider credits.
+
+```sh
+python -m pip install -c requirements.lock .   # tested dependency versions, without pytest
+stock-digest --no-browser                      # serves 127.0.0.1:8765 for the proxy
+```
+
+`requirements.lock` pins the versions the test suite last passed with; every package in
+it has a Linux x86_64 wheel for Python 3.12, so a server needs no compiler. To change
+them, run `uv pip compile pyproject.toml --extra dev --universal -o requirements.lock`
+(add `--upgrade` for newer releases), reinstall and run the tests.
 
 `BRK.B` and `BRK-B` both request Yahoo symbol `BRK-B`. Yahoo must classify the symbol
 as a USD `EQUITY` on a supported US exchange; ETFs, crypto, OTC and foreign venues are

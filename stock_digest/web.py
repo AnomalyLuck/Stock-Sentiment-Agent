@@ -9,7 +9,9 @@ streams newline-delimited JSON tagged by kind: {"type": "stage", "kind": "digest
 
 GET /api/digest?ticker=NVDA and GET /api/material?ticker=NVDA&tz=...&max=5 (always the last
 7 days) run one side alone and stream untagged events with exactly one terminal event.
-A client that disconnects aborts its run at the next progress message.
+A client that disconnects aborts its run at the next progress message. At most
+``Settings.max_runs`` of these runs (combined or single) proceed at once; a request beyond
+that ends immediately with a busy error per kind, before any model call.
 
 GET /api/social?query=NVDA (optional window=48h, the only accepted value, and
 sources=x,reddit,...) returns one JSON object: social posts from the last 48 hours,
@@ -41,8 +43,10 @@ PAGE = files("stock_digest").joinpath("ui", "index.html")
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
     "Content-Security-Policy": ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                                "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'"),
+                                "connect-src 'self'; img-src 'self' data: https://i.ytimg.com; base-uri 'none'; "
+                                "form-action 'none'"),  # i.ytimg.com: Social tab YouTube thumbnails
 }
+BUSY = "The server is busy with other searches. Try again in a few minutes."
 
 
 class ClientGone(Exception):
@@ -57,6 +61,7 @@ def _run_social(query: str, only):
 class DigestHandler(BaseHTTPRequestHandler):
     server_version = "StockDigest/0.2"
     settings: Settings | None = None
+    run_slots: threading.BoundedSemaphore | None = None  # set per server by make_server
     run = staticmethod(digest_once)
     run_material = staticmethod(material_once)
     run_combined = staticmethod(run_combined)
@@ -159,6 +164,10 @@ class DigestHandler(BaseHTTPRequestHandler):
         timeout = settings.timeout if settings else None
         finished: set[str] = set()
         print(f"[{label}] digest and material news requested", file=sys.stderr, flush=True)
+        if not self._claim_run_slot(label):
+            for kind in KINDS:
+                self._send({"type": "error", "kind": kind, "message": BUSY, "cost": cost_snapshot(complete=True)})
+            return
 
         def stage(kind: str, message: str) -> None:
             print(f"[{label}] {kind}: {clean(message)}", file=sys.stderr, flush=True)
@@ -197,7 +206,19 @@ class DigestHandler(BaseHTTPRequestHandler):
                 except ClientGone:
                     break
         finally:
+            self._release_run_slot()
             threading.Thread(target=flush_traces, daemon=True).start()
+
+    def _claim_run_slot(self, label: str) -> bool:
+        """Take one of the server's run slots without waiting; False (logged) when all are in use."""
+        if self.run_slots is None or self.run_slots.acquire(blocking=False):
+            return True
+        print(f"[{label}] refused: every run slot is in use", file=sys.stderr, flush=True)
+        return False
+
+    def _release_run_slot(self) -> None:
+        if self.run_slots is not None:
+            self.run_slots.release()
 
     def _json(self, status: int, body: dict) -> None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -244,6 +265,9 @@ class DigestHandler(BaseHTTPRequestHandler):
         """Run ``work(stage)`` and stream its progress and single result or error."""
         settings = self.settings
         print(f"[{label}] {kind} requested", file=sys.stderr, flush=True)
+        if not self._claim_run_slot(label):
+            self._send({"type": "error", "message": BUSY, "cost": cost_snapshot(complete=True)})
+            return
 
         def stage(message: str) -> None:
             print(f"[{label}] {clean(message)}", file=sys.stderr, flush=True)
@@ -264,13 +288,15 @@ class DigestHandler(BaseHTTPRequestHandler):
             except ClientGone:
                 pass
         finally:
+            self._release_run_slot()
             threading.Thread(target=flush_traces, daemon=True).start()
 
 
 def make_server(settings: Settings, port: int = 8765) -> ThreadingHTTPServer:
     from .social.security import install_log_redaction
     install_log_redaction()  # keep social provider keys out of any log line
-    handler = type("ConfiguredDigestHandler", (DigestHandler,), {"settings": settings})
+    handler = type("ConfiguredDigestHandler", (DigestHandler,),
+                   {"settings": settings, "run_slots": threading.BoundedSemaphore(settings.max_runs)})
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
     return server
