@@ -10,3 +10,16 @@ dist/
 build/
 .pytest_cache/
 .DS_Store
+
+# UserData kit (private beta): kit files and anything derived from them stay off GitHub.
+# See adr/ADR-0004. UserData.sh is pasted into the Droplet by hand, never fetched from git.
+/CLAUDE.md
+/UserData.sh
+/lib/
+/stages/README.md
+/Intent.md
+/intents/
+/BINDINGS.md
+/Tutorial.md
+# Droplet secrets, copied to the box by deploy/push-secrets.sh (UD-16).
+/deploy/secrets/

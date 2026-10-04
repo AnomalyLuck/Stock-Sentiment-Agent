@@ -89,86 +89,55 @@ strings from external page links (so a shared `?t=NVDA` link cannot start paid w
 and prevents framing the UI. Use a current browser. Direct API clients must supply
 both Basic Auth and that header; browsers that omit it receive HTTP 403.
 
-### DigitalOcean Droplet (Ubuntu 24.04)
+### DigitalOcean Droplet (Rocky Linux 10, built by UserData)
 
-Install Python 3.12 with `python3-venv`, and install Caddy 2.8 or newer using the
-[official Debian/Ubuntu package instructions](https://caddyserver.com/docs/install#debian-ubuntu-raspbian).
-These steps assume the repository is checked out at `/opt/stock-digest` and the
-official package has created the `caddy` user and `caddy.service`. Build a fresh
-Linux virtual environment; the Mac's `.venv` cannot be copied to the Droplet.
+The Droplet builds itself from `UserData.sh`, a cloud-init loader generated from a private
+UserData kit and kept out of git (see [`adr/`](adr/)). It brings the box to an SSH-only baseline
+(nftables with a `TcpOK` port set, hardened sshd), fetches this repository into `/srv/git-ops`,
+records the commit, and calls [`stages/StockDigest.sh`](stages/StockDigest.sh). The stage
+installs Python 3.12 and Caddy (EPEL), builds `/opt/stock-digest/.venv` from `requirements.lock`,
+installs the files in [`deploy/`](deploy/), opens ports 80 and 443, and enables both services.
+UserData contains no secrets, so the services wait for them. The fetch uses no credentials, which
+is why the repository is public.
 
-Create the app service account, install the app, and prepare its private settings:
+1. **Create the Droplet.** Image **Rocky Linux 10 x64**, your SSH key, and the full text of
+   `UserData.sh` pasted into **User data**. 1 GB of RAM is enough.
+2. **Watch the build.** After a few minutes, `ssh root@DROPLET_IP`. The login banner gives the
+   build status. Logs are in `/srv/BldTmp/UserData/`: `loader.log` and `stockdigest.log` end with
+   `PASS`/`FAIL` lines and a `VERIFY` summary. A `.partial` file means that stage died there.
+3. **Prepare the secrets** in the gitignored `deploy/secrets/` directory. `app.env` is seeded from
+   `.env` with the server lines added; review it, set `SEC_USER_AGENT` if you want SEC filings,
+   and delete unused provider keys and every `your-...` placeholder. It is a systemd
+   `EnvironmentFile`: `KEY=value` lines and `#` comments only, no `export`, no trailing comments.
+   Then create the login file; the password is typed at the prompt, never on the command line:
+   ```sh
+   printf 'admin %s\n' "$(caddy hash-password --algorithm bcrypt)" >> deploy/secrets/stock-digest.users
+   ```
+   One line per person. The username can be anything.
+4. **Point DNS** at the Droplet: the `A` record to its public IPv4, and the `AAAA` record to its
+   IPv6 or removed. The `www` CNAME can keep pointing at the root domain.
+5. **Push the secrets and start the site:**
+   ```sh
+   deploy/push-secrets.sh root@DROPLET_IP
+   ```
+   This copies the two files with root-only modes, runs `stock-digest-activate` on the box, and
+   prints its `PASS`/`FAIL` checks: the app answering on loopback only, Caddy redirecting on 80,
+   and `https://stocksentimentdigest.com/` answering **401** until you sign in. If the last check
+   fails with code 000, Caddy has no certificate yet; confirm DNS and retry. Re-run the same
+   command after changing a key or a login.
 
+**Afterwards.** `systemctl status stock-digest caddy` and `journalctl -u stock-digest -u caddy`.
+To deploy new code:
 ```sh
-cd /opt/stock-digest
-sudo useradd --system --user-group --create-home --home-dir /var/lib/stock-digest --shell /usr/sbin/nologin stock-digest
-sudo python3 -m venv .venv
-sudo .venv/bin/python -m pip install -c requirements.lock .
-sudo install -d -m 750 /etc/stock-digest
-sudo install -m 600 .env.example /etc/stock-digest/app.env
-sudoedit /etc/stock-digest/app.env
+ssh root@DROPLET_IP 'cd /srv/git-ops && git fetch --depth 1 origin main && git checkout -q -f --detach FETCH_HEAD \
+  && /opt/stock-digest/.venv/bin/python -m pip install -q -c requirements.lock . && systemctl restart stock-digest'
 ```
-
-Set `OPENAI_API_KEY`, model choices, and any social-provider keys. Remove or blank
-unused provider keys instead of leaving their example values. The systemd service
-reads this file as environment variables; restart the app after changing it. The
-service account must be able to read the checkout and virtual environment. The
-service manager reads the root-only `app.env` file. Set `STOCK_DIGEST_CACHE_DIR` to
-`/var/cache/stock-digest` in this file (or remove its blank entry) so it uses the
-cache directory managed by systemd.
-
-Install the Caddy template and create its server-specific domain and login files:
-
-```sh
-sudo install -o root -g caddy -m 640 deploy/Caddyfile /etc/caddy/Caddyfile
-sudo install -o root -g caddy -m 640 deploy/caddy.env.example /etc/caddy/stock-digest.env
-sudo install -o root -g caddy -m 640 deploy/stock-digest.users.example /etc/caddy/stock-digest.users
-sudoedit /etc/caddy/stock-digest.env
-caddy hash-password --algorithm bcrypt
-sudoedit /etc/caddy/stock-digest.users
-```
-
-For this app, set `STOCK_DIGEST_DOMAINS=stocksentimentdigest.com, www.stocksentimentdigest.com`.
-Keep the space after the comma; Caddy and systemd read this env file directly, so do
-not source it as a shell script. Keep only hostnames you intend to serve.
-In `stock-digest.users`, replace the placeholder
-with the generated hash, keeping `admin` as the username or choosing another one.
-Additional users each get their own line and hash. Passwords are entered interactively;
-do not put plaintext passwords in commands, config, or Git. These private files are
-created on the Droplet; no files from the Mac's `~/.config/caddy` directory are required.
-The `.example` files are templates, not working credentials.
-
-Install the services and validate the configuration with the same domain settings:
-
-```sh
-sudo install -m 644 deploy/stock-digest.service /etc/systemd/system/stock-digest.service
-sudo install -D -m 644 deploy/caddy.service.d/stock-digest.conf /etc/systemd/system/caddy.service.d/stock-digest.conf
-sudo -u caddy /usr/bin/caddy validate --config /etc/caddy/Caddyfile --envfile /etc/caddy/stock-digest.env
-sudo systemctl daemon-reload
-sudo systemctl enable --now stock-digest
-sudo systemctl enable caddy
-sudo systemctl restart caddy
-```
-
-The Caddy drop-in loads the domain settings and avoids logging the process environment.
-See [Caddy's service documentation](https://caddyserver.com/docs/running#environment-variables).
-For later Caddyfile or login changes, validate then run `sudo systemctl reload caddy`.
-Restart Caddy after changing its environment file. Reinstall the Python package and
-restart `stock-digest` after updating app code.
-
-When ready to move traffic, point the domain's `A` record to the **Droplet's public IPv4**
-instead of the home IP. The `www` CNAME can continue pointing to the root domain. Any
-`AAAA` record must point to the Droplet's working IPv6 address, or be removed. Allow
-inbound TCP **80 and 443** through the Droplet's firewall and any active OS firewall;
-keep SSH access available from your administration IP. Ports 8765 and 2019 stay private.
-See [DigitalOcean firewall rules](https://docs.digitalocean.com/products/networking/firewalls/how-to/configure-rules/).
-Caddy obtains certificates once DNS and inbound access are ready; no home-router
-forwarding is needed for the Droplet.
-
-Check `systemctl status stock-digest caddy` and `journalctl -u stock-digest -u caddy`.
-An unauthenticated request to `https://stocksentimentdigest.com/` should return **401**
-with a Basic Auth challenge; after signing in, the browser should show the search UI.
-Both services start on boot, so the deployed site no longer depends on the Mac staying on.
+SELinux is permissive for the build boot only; the first reboot returns it to enforcing, so check
+both services after that reboot. Ports 8765 (app) and 2019 (Caddy admin) stay closed; the firewall
+is nftables inside the box, so a DigitalOcean cloud firewall is optional but harmless. Ports 80
+and 443 are re-added to `TcpOK` after every nftables start by `stock-digest-ports`, which a drop-in
+runs; a `systemctl reload nftables` drops them until the next restart or until you run
+`stock-digest-ports` or `stock-digest-activate`.
 
 `requirements.lock` pins the versions the test suite last passed with; every package in
 it has a Linux x86_64 wheel for Python 3.12, so a server needs no compiler. To change
