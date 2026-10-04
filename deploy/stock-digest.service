@@ -1,0 +1,23 @@
+[Unit]
+Description=Stock Digest web application
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=stock-digest
+Group=stock-digest
+WorkingDirectory=/opt/stock-digest
+EnvironmentFile=/etc/stock-digest/app.env
+Environment=PYTHONUNBUFFERED=1
+Environment=STOCK_DIGEST_CACHE_DIR=/var/cache/stock-digest
+CacheDirectory=stock-digest
+ExecStart=/opt/stock-digest/.venv/bin/python -m stock_digest --no-browser --port 8765
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

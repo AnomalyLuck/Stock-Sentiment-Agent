@@ -1,23 +1,37 @@
-# Caddy in front of the Stock Digest UI on a server: HTTPS plus a password per person.
-#
-# The app keeps listening on 127.0.0.1:8765 only (run `stock-digest --no-browser`), so
-# Caddy is the only way in. Every search spends the server's OpenAI and social-provider
-# credits; keep basic_auth on.
-#
-# 1. Replace digest.example.com with your domain. Its DNS A record must point at the
-#    server, and ports 80 and 443 must be open; Caddy obtains and renews the certificate.
-# 2. For each person, run `caddy hash-password` and add a line: <username> <hash>.
-#    The placeholder below is not a valid hash, so it lets nobody in until you replace it.
-# 3. Install as /etc/caddy/Caddyfile, check it with
-#    `caddy validate --config /etc/caddy/Caddyfile`, then `systemctl reload caddy`.
-#
-# Progress streams as newline-delimited JSON without a Content-Length, which Caddy flushes
-# immediately. Do not add `flush_interval -1`: in that mode Caddy keeps the backend request
-# running after the browser disconnects, so an abandoned search would keep spending.
+# Portable public proxy configuration. See README.md: Running on a server.
+# Set STOCK_DIGEST_DOMAINS using caddy.env.example and place stock-digest.users
+# beside this file. Real login hashes stay outside version control.
+# The app listens only on 127.0.0.1:8765; Caddy handles HTTPS and authentication.
 
-digest.example.com {
-	basic_auth {
-		replace-me REPLACE_WITH_OUTPUT_OF_caddy_hash-password
+{$STOCK_DIGEST_DOMAINS} {
+	route {
+		basic_auth {
+			import stock-digest.users
+		}
+
+		# Paid API calls must originate in this site's browser UI.
+		@external_api {
+			path /api/*
+			not header Sec-Fetch-Site same-origin
+		}
+		respond @external_api "Open the website and use its search form." 403
+
+		# The UI auto-searches a ticker in the query string. Strip external page
+		# queries before serving it. Use the raw query: parsed query matchers can
+		# reject malformed unrelated parameters that the browser still accepts.
+		@external_search_link {
+			path / /index.html
+			expression {http.request.uri.query} != ''
+			not header Sec-Fetch-Site same-origin
+		}
+		redir @external_search_link / 303
+
+		header X-Frame-Options DENY
+		reverse_proxy 127.0.0.1:8765 {
+			header_down +Content-Security-Policy "frame-ancestors 'none'"
+			header_up -Authorization
+			# Unknown Content-Length already makes Caddy flush progress immediately.
+			# Avoid flush_interval -1: it prevents cancellation on client disconnect.
+		}
 	}
-	reverse_proxy 127.0.0.1:8765
 }

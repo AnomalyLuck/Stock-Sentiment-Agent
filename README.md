@@ -74,14 +74,101 @@ counted; they have their own daily provider budgets (see below).
 
 The UI server stays bound to 127.0.0.1. To reach it from other machines, put an
 authenticating HTTPS proxy in front: [`deploy/Caddyfile`](deploy/Caddyfile) does this
-with Caddy (automatic TLS and a `basic_auth` password per person), with setup steps in
-its comments. Without a password, anyone who finds the address can run searches on your
-OpenAI and social-provider credits.
+with Caddy (automatic TLS and a `basic_auth` password per person). The reusable proxy
+and service configuration is versioned in `deploy/`; real credentials stay on the
+server. Without authentication, anyone who finds the address can spend your OpenAI
+and social-provider credits.
 
 ```sh
 python -m pip install -c requirements.lock .   # tested dependency versions, without pytest
 stock-digest --no-browser                      # serves 127.0.0.1:8765 for the proxy
 ```
+
+The proxy also requires `Sec-Fetch-Site: same-origin` on API requests, removes query
+strings from external page links (so a shared `?t=NVDA` link cannot start paid work),
+and prevents framing the UI. Use a current browser. Direct API clients must supply
+both Basic Auth and that header; browsers that omit it receive HTTP 403.
+
+### DigitalOcean Droplet (Ubuntu 24.04)
+
+Install Python 3.12 with `python3-venv`, and install Caddy 2.8 or newer using the
+[official Debian/Ubuntu package instructions](https://caddyserver.com/docs/install#debian-ubuntu-raspbian).
+These steps assume the repository is checked out at `/opt/stock-digest` and the
+official package has created the `caddy` user and `caddy.service`. Build a fresh
+Linux virtual environment; the Mac's `.venv` cannot be copied to the Droplet.
+
+Create the app service account, install the app, and prepare its private settings:
+
+```sh
+cd /opt/stock-digest
+sudo useradd --system --user-group --create-home --home-dir /var/lib/stock-digest --shell /usr/sbin/nologin stock-digest
+sudo python3 -m venv .venv
+sudo .venv/bin/python -m pip install -c requirements.lock .
+sudo install -d -m 750 /etc/stock-digest
+sudo install -m 600 .env.example /etc/stock-digest/app.env
+sudoedit /etc/stock-digest/app.env
+```
+
+Set `OPENAI_API_KEY`, model choices, and any social-provider keys. Remove or blank
+unused provider keys instead of leaving their example values. The systemd service
+reads this file as environment variables; restart the app after changing it. The
+service account must be able to read the checkout and virtual environment. The
+service manager reads the root-only `app.env` file. Set `STOCK_DIGEST_CACHE_DIR` to
+`/var/cache/stock-digest` in this file (or remove its blank entry) so it uses the
+cache directory managed by systemd.
+
+Install the Caddy template and create its server-specific domain and login files:
+
+```sh
+sudo install -o root -g caddy -m 640 deploy/Caddyfile /etc/caddy/Caddyfile
+sudo install -o root -g caddy -m 640 deploy/caddy.env.example /etc/caddy/stock-digest.env
+sudo install -o root -g caddy -m 640 deploy/stock-digest.users.example /etc/caddy/stock-digest.users
+sudoedit /etc/caddy/stock-digest.env
+caddy hash-password --algorithm bcrypt
+sudoedit /etc/caddy/stock-digest.users
+```
+
+For this app, set `STOCK_DIGEST_DOMAINS=stocksentimentdigest.com, www.stocksentimentdigest.com`.
+Keep the space after the comma; Caddy and systemd read this env file directly, so do
+not source it as a shell script. Keep only hostnames you intend to serve.
+In `stock-digest.users`, replace the placeholder
+with the generated hash, keeping `admin` as the username or choosing another one.
+Additional users each get their own line and hash. Passwords are entered interactively;
+do not put plaintext passwords in commands, config, or Git. These private files are
+created on the Droplet; no files from the Mac's `~/.config/caddy` directory are required.
+The `.example` files are templates, not working credentials.
+
+Install the services and validate the configuration with the same domain settings:
+
+```sh
+sudo install -m 644 deploy/stock-digest.service /etc/systemd/system/stock-digest.service
+sudo install -D -m 644 deploy/caddy.service.d/stock-digest.conf /etc/systemd/system/caddy.service.d/stock-digest.conf
+sudo -u caddy /usr/bin/caddy validate --config /etc/caddy/Caddyfile --envfile /etc/caddy/stock-digest.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now stock-digest
+sudo systemctl enable caddy
+sudo systemctl restart caddy
+```
+
+The Caddy drop-in loads the domain settings and avoids logging the process environment.
+See [Caddy's service documentation](https://caddyserver.com/docs/running#environment-variables).
+For later Caddyfile or login changes, validate then run `sudo systemctl reload caddy`.
+Restart Caddy after changing its environment file. Reinstall the Python package and
+restart `stock-digest` after updating app code.
+
+When ready to move traffic, point the domain's `A` record to the **Droplet's public IPv4**
+instead of the home IP. The `www` CNAME can continue pointing to the root domain. Any
+`AAAA` record must point to the Droplet's working IPv6 address, or be removed. Allow
+inbound TCP **80 and 443** through the Droplet's firewall and any active OS firewall;
+keep SSH access available from your administration IP. Ports 8765 and 2019 stay private.
+See [DigitalOcean firewall rules](https://docs.digitalocean.com/products/networking/firewalls/how-to/configure-rules/).
+Caddy obtains certificates once DNS and inbound access are ready; no home-router
+forwarding is needed for the Droplet.
+
+Check `systemctl status stock-digest caddy` and `journalctl -u stock-digest -u caddy`.
+An unauthenticated request to `https://stocksentimentdigest.com/` should return **401**
+with a Basic Auth challenge; after signing in, the browser should show the search UI.
+Both services start on boot, so the deployed site no longer depends on the Mac staying on.
 
 `requirements.lock` pins the versions the test suite last passed with; every package in
 it has a Linux x86_64 wheel for Python 3.12, so a server needs no compiler. To change

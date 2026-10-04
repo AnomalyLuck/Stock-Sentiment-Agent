@@ -1,5 +1,8 @@
 .venv/
 .env
+/deploy/caddy.env
+/deploy/stock-digest.users
+stock-digest.password-hash
 __pycache__/
 *.py[cod]
 *.egg-info/

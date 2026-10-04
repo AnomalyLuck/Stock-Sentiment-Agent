@@ -1,0 +1,4 @@
+# Copy beside the installed Caddyfile as stock-digest.users.
+# Generate a bcrypt hash with: caddy hash-password --algorithm bcrypt
+# One username and hash per line. The placeholder intentionally fails validation.
+admin REPLACE_WITH_BCRYPT_HASH
