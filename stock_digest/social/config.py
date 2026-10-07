@@ -13,7 +13,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 NAMES = (
-    "OPENAI_API_KEY", "OPENAI_VERIFY_MODEL", "SOCIAL_ALIAS_MODEL",
+    "FINNHUB_API_KEY", "OPENAI_API_KEY", "OPENAI_VERIFY_MODEL", "SOCIAL_ALIAS_MODEL",
     "REDDIT_API_KEY", "REDDIT_API_BASE", "REDDIT_CACHE_TTL", "REDDIT_MEGATHREAD_CACHE_TTL",
     "REDDIT_MAX_SUBREDDITS_PER_QUERY", "REDDIT_MAX_COMMENT_TREES_PER_QUERY", "REDDIT_DAILY_CALL_BUDGET",
     "X_API_PROVIDER", "X_API_KEY", "X_API_BASE", "X_MAX_PAGES", "X_DAILY_TWEET_BUDGET",
@@ -25,6 +25,11 @@ _local = dotenv_values(Path.cwd() / ".env", interpolate=False)
 for _name in NAMES:
     if _local.get(_name) is not None:
         os.environ.setdefault(_name, _local[_name])
+
+# News retrieval (retrieval.py): Finnhub company-news plus Google News RSS. The digest and
+# material news read one fetch of it (stock_digest/news.py); without a key, Google News only.
+FINNHUB_API_KEY: str = os.getenv("FINNHUB_API_KEY", "")
+FINNHUB_BASE_URL: str = "https://finnhub.io/api/v1"
 
 # Company-alias lookup (aliases.py) uses this app's OpenAI key; without it, the
 # Yahoo company name plus static seeds are used. Model defaults to the reviewer model.

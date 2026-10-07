@@ -836,9 +836,9 @@
       const status = el("span", "flag flag-status", entry.status);
       status.title = "Event status";
       tags.append(status);
-      if (entry.verification === "search_results_only") {
-        const flag = el("span", "flag flag-timing", "Not opened");
-        flag.title = "The source page could not be opened for full-text verification; this entry relies on search-result content.";
+      if (entry.verification === "headline_only") {
+        const flag = el("span", "flag flag-timing", "Headline only");
+        flag.title = "Screened from provider headlines; the articles were not opened.";
         tags.append(flag);
       }
       dev.append(tags);
@@ -863,8 +863,9 @@
     $("m-coverage").textContent = m.coverage_note ? `Coverage note: ${m.coverage_note}` : "";
     const fine = $("m-fine");
     fine.replaceChildren();
-    const disclosure = el("div", "", `Generated ${m.generated}. AI-assisted research from web search; coverage is not ` +
-      "exhaustive and sources should be checked before relying on them. Not investment advice. ");
+    const disclosure = el("div", "", `Generated ${m.generated}. AI-screened headlines from Finnhub and Google News; ` +
+      "the articles were not opened, coverage is not exhaustive, and sources should be checked before relying on " +
+      "them. Not investment advice. ");
     const trace = safeUrl(m.trace_url);
     if (trace) {
       const link = el("a", "", "Run trace");
@@ -934,8 +935,8 @@
       $("cost-detail").replaceChildren(el("div", "", "The server did not return usage for this search."));
     }
   }
-  // /api/run streams both the material-news run and the digest (which consumes the material
-  // results, so it finishes last). Every event carries its kind; each kind ends exactly once.
+  // /api/run streams both the material-news run and the digest, which screen one shared news
+  // fetch in parallel. Every event carries its kind; each kind ends exactly once.
   let controller = null;
   async function runAll(raw) {
     const ticker = raw.trim().toUpperCase();

@@ -4,10 +4,10 @@ A Python terminal application that prints a current, cited digest for one US-lis
 common stock or ADR: the price move, what may explain it, relevant company news and
 catalysts, broader market context, and the next scheduled event. It combines
 structured Yahoo Finance data (prices, earnings, estimates, rating changes, filings,
-options, benchmarks) with bounded hosted web research, writes the digest with a model,
-and checks it with Python rules and a model reviewer. Only the finished result reaches
-stdout. Terminal digest mode needs no browser or server. The material-news agent keeps a
-small local cache of company profiles and successfully verified evidence (see below).
+options, benchmarks) with one fetch of the week's company headlines (Finnhub and Google
+News), which a model screens for catalysts. It writes the digest with a model and checks it
+with Python rules and a model reviewer. Only the finished result reaches stdout. Terminal
+digest mode needs no browser or server.
 
 ## Install and configure
 
@@ -19,6 +19,7 @@ source .venv/bin/activate
 python -m pip install -c requirements.lock -e ".[dev]"   # dev adds pytest; the lock pins tested versions
 
 export OPENAI_API_KEY='your-openai-key'
+export FINNHUB_API_KEY='your-finnhub-key'     # optional; company news (free tier), else Google News only
 export OPENAI_MODEL='gpt-4.1'                 # optional; writer model (default shown)
 export OPENAI_RESEARCH_MODEL=''               # optional; defaults to OPENAI_MODEL
 export OPENAI_VERIFY_MODEL='gpt-4.1-mini'     # optional; reviewer model (default shown)
@@ -31,9 +32,12 @@ The CLI reads `.env` from the current directory (see `.env.example`); exported
 variables take precedence. Only the settings above are loaded, without shell
 execution or interpolation. Keep credentials private; never commit real keys.
 
-Yahoo Finance requires no API key. The OpenAI account needs API billing, access to
-the selected models, and hosted web search for the research model. Every model must
-support the Responses API and structured output.
+Yahoo Finance and Google News require no API key. `FINNHUB_API_KEY` is a free key from
+finnhub.io; it is read with the social settings (`stock_digest/social/config.py`). The free
+tier covers US listings only, so other listings, a missing or rejected key, or Finnhub rate
+limiting fall back to Google News alone, with a coverage note. The OpenAI account needs API
+billing, access to the selected models, and hosted web search for the research model (used
+only for earnings searches). Every model must support the Responses API and structured output.
 
 `SEC_USER_AGENT` is sent only to sec.gov, whose fair-access policy requires a
 descriptive User-Agent with contact details. Without it, Yahoo's filing list is used;
@@ -56,13 +60,12 @@ python -m pytest                  # offline test suite
 The UI is a single local page served by Python's standard library, bound to
 127.0.0.1 only; nothing is exposed to the network. The page's only external requests
 are YouTube thumbnails from i.ytimg.com in the Social Sentiment tab. Type a ticker and
-press Search. One combined run starts: the material news
-agent (below) and the digest, which waits for the material results and uses them as
-evidence. Progress streams into each tab; the Material news tab fills first (about
-2.5 to 3 minutes) and the Digest tab shortly after (about 3 to 4 minutes in total).
-Starting another search or closing the tab abandons the current run. Stop the server
-with Ctrl-C. The terminal mode (`--terminal`) still runs the digest on its own, with
-its own seven searches, in one to two minutes.
+press Search. One combined run starts: the issuer is resolved and the week's headlines
+are fetched once, then material news (below) and the digest screen them in parallel.
+Progress streams into each tab; the Material news tab usually fills first (about 20 to
+40 seconds) and the Digest tab within about a minute. Starting another search or closing
+the tab abandons the current run. Stop the server with Ctrl-C. The terminal mode
+(`--terminal`) runs the digest alone and fetches its own headlines.
 
 The server runs at most `STOCK_DIGEST_MAX_RUNS` searches at once (default 3), counting
 combined, digest-only and material-only runs. A search beyond that ends immediately
@@ -154,13 +157,11 @@ listing, `1` operational failure, `130` interruption.
 
 ## Material news agent
 
-A second agent, in its own **Material news** tab of the UI and as the `material-news`
-command, answers a different question: what potentially stock-moving, company-led
-developments happened in the last week? It returns one entry per distinct development,
-each with a date, a status, a concrete reason it could matter, and a source link. It uses
-the same `OPENAI_API_KEY`, models (`OPENAI_RESEARCH_MODEL` for search and verification,
-`OPENAI_MODEL` for consolidation) and `STOCK_DIGEST_TIMEOUT` deadline; no other
-credentials are needed.
+The **Material news** tab of the UI, also the `material-news` command, answers a
+different question: what potentially stock-moving developments happened in the last week?
+It returns one entry per distinct development, each with a date, a status, a short reason
+it could matter, and links to the headlines it was read from. It uses `OPENAI_API_KEY`,
+`OPENAI_RESEARCH_MODEL` for the screen, `FINNHUB_API_KEY` and `STOCK_DIGEST_TIMEOUT`.
 
 ```sh
 material-news NVDA                          # Markdown digest to stdout, progress to stderr
@@ -179,18 +180,12 @@ running ticker is blocked; a different ticker restarts both. The Material news t
 the browser's timezone, offers an optional maximum (applied at the next search, to the
 table only), and **Copy Markdown** copies the exact text output.
 
-**How the digest uses the material results.** In the combined run the digest does not
-search for press releases, deals or reported talks itself; the material agent covers
-those with more searches and by opening the sources. The digest keeps four searches the
-material agent excludes by design: today's move reporting, analyst actions, the
-earnings-date announcement, and sector/macro news. After its own research it waits for
-the material run (a material failure fails the digest too), then takes every qualifying
-development first reported **today or in the previous trading session** (a Monday digest
-sees Friday through Monday) as evidence. Older developments stay in the Material news
-tab. Each supplied development becomes a cited source whose timing is classified against
-the price observation like any other item, and the writer and reviewer are told that its
-supporting material is the material agent's verified key facts, not article text. The
-Yahoo headlines, structured Yahoo data and the digest's own checks are unchanged.
+**One fetch, two screens.** A combined run resolves the issuer once and fetches the
+week's headlines once (`stock_digest/news.py`). Material news screens the whole week;
+the digest screens only the headlines since the previous regular-session close, or the
+last 24 hours when that reaches further back, so a Monday digest sees Friday's after-hours
+news. The two screens run in parallel and fail separately: a material failure no longer
+fails the digest, and a failed fetch leaves the digest without catalysts (it says so).
 
 **Cost per ticker search.** After each result, the UI shows an estimated USD cost below
 the results, split between Material news and Digest. The first result shows the running
@@ -199,9 +194,8 @@ breakdown** for model-token costs, web-search charges, model names and token cou
 Each new search starts a fresh total. Concurrent ticker requests are accounted separately.
 
 The server observes raw Responses API usage before the agent SDK parses the output. This
-includes research, writing, review, revisions and any retry response that reports usage,
-even if the application later rejects its output. Local cache hits incur no new model
-charge. Cached-input and cache-write tokens use separate rates; reasoning tokens are
+includes screens, earnings searches, writing, review, revisions and any retry response
+that reports usage, even if the application later rejects its output. Cached-input and cache-write tokens use separate rates; reasoning tokens are
 already part of output tokens and are not charged twice. Only completed web `search`
 actions receive a search-call fee; page-open and find actions do not receive that fee.
 
@@ -230,151 +224,59 @@ match. Funds and other non-company listings are rejected.
 
 **How it works.**
 
-1. **Resolve and profile.** The ticker is resolved to the issuer, and one search builds a
-   profile: aliases, brands, subsidiaries, and investor-relations and newsroom pages.
-   Successful profiles are reused for seven days, keyed by issuer identity, model and prompt.
-2. **Discovery.** Fifteen searches run on every request, up to eight at once:
-   - one broad search and one restricted to the company's domains, newswires and regulators;
-   - two outlet searches covering Reuters/Bloomberg and CNBC/WSJ/FT;
-   - four grouped topic searches covering earnings/capital, deals/contracts/partnerships/
-     reported talks, product news in the words it is reported with ("unveils OR launches OR
-     delays OR reschedules"), and regulation/legal/incidents/leadership;
-   - one dated search per window day for the seven most recent days, such as "NVIDIA news
-     September 28, 2026". Topic searches over a heavily covered company return its biggest
-     or evergreen stories; dated searches surface each day's coverage.
+1. **Resolve.** The ticker is resolved to the issuer with Yahoo Finance.
+2. **Fetch.** `news.fetch_week` runs Sentiment-Search's `retrieval.fetch_news` for the
+   last 7 days (`"1w"`): Finnhub company-news, paged backwards past its ~250-item cap, plus
+   Google News RSS (at most 100 items). It keeps headlines that name the company or ticker,
+   drops listicle titles and a few low-signal sources, removes exact and fuzzy duplicates
+   (keeping the earliest report), and caches the list for 15 minutes. Finnhub symbols use
+   a dot for share classes (`BRK.B`). The fetch runs on the social tab's event loop because
+   the alias lookup keeps one OpenAI client per process.
+3. **Screen.** One model call (`MaterialScreen`, no tools) reads titles only: id, title,
+   source and time, newest first, at most 300. It keeps developments that can change the
+   company's value (earnings, guidance, deliveries, capital returns, deals and deal talks,
+   financing, major launches or delays, large contracts, legal and regulatory actions,
+   leadership, insider trades, analyst rating or target changes, attributed reports of
+   talks). It skips opinion and analysis, stock lists and comparisons, price-move recaps,
+   previews, stories about other companies, and minor news (feature updates, model
+   refreshes, small orders, events). Each item cites one to three article ids and has a
+   neutral headline, a `catalyst_type`, a status and a one-clause reason.
+4. **Gate.** `news.screen_gate` drops items that cite no supplied article or only reuse
+   another item's articles; each article backs at most one item.
+5. **Entries.** Each item is dated by its earliest cited article and links up to two of
+   them. Talks and unconfirmed reports keep their outlet in the text ("Reported by …"), and
+   wording that turns them into a confirmed outcome drops the entry; plain reports show
+   "— reported". Entries are listed newest first. Every entry is labelled **Headline only**:
+   no article is opened.
 
-   Up to 40 dated Yahoo Finance headlines are classified in **one separate model call with
-   no web tools**. The compact classifications reference lead indexes; Python attaches the
-   provider's URL, title, summary and timestamp, so the model cannot replace that metadata.
-   Missing or invalid classifications are disclosed as incomplete feed coverage. If Yahoo
-   returns no headlines at all, usually because it is rate-limiting requests, the coverage
-   note says the run relied on web search alone.
-
-   At most two additional searches run if time allows, prioritizing failed or malformed
-   queries, undated potentially material leads, then sparse coverage (fewer than three
-   candidate development groups). Sparse coverage prompts brand/subsidiary and alias
-   searches. This is a coverage heuristic, not a guarantee that every important story was
-   found.
-3. **Gates in Python.** Each extracted candidate must pass four gates:
-   - **Subject:** the company is the main subject, or a named counterparty in a
-     partnership, contract, investment, acquisition or financing deal. Roundups, lists,
-     tags and partner-led product stories fail.
-   - **Materiality:** not a default-excluded category (routine releases, SDKs, game
-     integrations, patches, awards, analyst commentary, price action, sector news), not
-     rated "none", with a "changes ___ through ___" mechanism that is not generic.
-     Contracts and partnerships under 0.01% of market value fail on size.
-   - **Time:** a publication date from search metadata, the feed, or the source's stated
-     date falls in the window, or an in-window update adds a material new fact. Rehashes
-     fail. Undated items that discovery judges older than the window are dropped; other
-     undated items go to verification.
-   - **Evidence:** the URL appeared in the search tool's own metadata or the feed.
-4. **Consolidation.** Candidates are grouped by development key and by copies of the same
-   article (tracking-parameter variants included). A model then merges groups that
-   describe the same development. Distinct milestones of one deal stay separate.
-5. **Verification.** Up to 24 developments, eight at once, are each verified by opening
-   the most original accessible source (up to five search or page actions). Dated
-   in-window developments go first, then undated ones by materiality. The verifier
-   confirms the timestamp, status and subject, and writes the entry text. It rejects only
-   unsupported, off-subject or old stories; doubts about size become lower scores.
-   Paywalled stories are verified from authorized republications, never social posts.
-   An included development whose primary source was opened can reuse its verification for
-   **30 minutes** when all rediscovered evidence matches. New URLs, timestamps, summaries,
-   classifications or source snippets invalidate the match; ordering, exact duplicate
-   candidates and URL tracking parameters do not. Matches also require the same issuer,
-   model, verifier prompt, language, timezone and window length. The sliding window is
-   rechecked by the gates on every run. Failures, exclusions and search-only fallbacks are
-   not cached. Conservative matching can miss the cache when model wording changes.
-6. **Re-gating and ranking.** The gates run again on the verified reading. Reported items
-   keep a "— reported" label and attribution: a named outlet ("Reuters reported"),
-   "reportedly" or "according to", or else a "Reported by …" prefix. Wording that turns a
-   report into a confirmed outcome excludes the entry. Entries are ranked by magnitude,
-   directness, novelty, evidence quality and status, with recency as the tiebreaker.
-
-When a source cannot be opened, an entry may still appear from its search-result content,
-from any source except social-media posts. It is attributed to the originating outlet,
-ranked conservatively (lowest when the source is an aggregator), flagged "Not opened", and
-a coverage note is added.
-
-**Date handling.** A date-only stamp is compared by calendar day in the run timezone;
-date-only items on the window's first, partial day are accepted.
-
-**Output.** The Markdown table from the specification, with nothing appended: no appendix,
-no minor-news section, no methodology. If the search succeeded and nothing qualified, the
-digest says so in one line. If every search failed, the run reports a research limitation,
-never "no news". The internal record (`--record`) lists every query, every excluded
-candidate with its gate and reason, and every development with its rationale, lineages and
-duplicates. It also records agent-run counts by stage, cache hits, and each event's original
-verification time and whether it was reused. These counts exclude SDK retries and extra
-turns, and are not token or billing totals.
-
-**Local cache.** Profiles and verified evidence persist across UI restarts and CLI runs in
-`~/.cache/stock-digest/material.sqlite3`. Set `STOCK_DIGEST_CACHE_DIR` in `.env` to choose
-another directory, or set it to `off` to disable caching. Delete that file while the app is
-stopped to clear it. The cache holds at most 1,000 entries, removes expired entries on
-writes, and never extends an entry's expiry on a cache hit. Cache failures fall back to
-normal research with a diagnostic. It stores public evidence and model outputs, not API
-keys. Discovery always runs afresh; updates not surfaced by discovery may remain unseen
-until the verification expires. Simultaneous requests can still duplicate uncached work.
+**Output.** The Markdown table from the specification, with nothing appended. If the
+screen ran and nothing qualified, the digest says so in one line. If the screen failed, the
+run reports a research limitation, never "no news". The internal record (`--record`) lists
+the provider, article counts and every screened development with its articles.
 
 **Limits.**
-- Hosted search has no pagination, and coverage is not exhaustive.
-- Paywalled sources are never bypassed.
-- Model judgment and search results vary between runs, so the same ticker can yield
-  different entries. Python rules, not the models, make the final inclusion decisions.
+- Coverage is what Finnhub and Google News index for the company's name; Google News
+  returns at most 100 items per query, and non-US listings get Google News only.
+- Headlines can mislead and are not verified against the articles. Model judgment varies
+  between runs.
 - The wording checks for reported items apply only to English output.
-- A material run starts with fifteen discovery calls, at most one profile call, one feed
-  classification, two follow-ups and one consolidation, plus up to 24 uncached event
-  verifications: **at most 44 agent runs before SDK retries/extra turns**. For example,
-  a cached profile, fifteen searches, one feed batch, one consolidation and five new events
-  take 22 agent runs with no follow-ups. Reused verifications reduce this further.
-  The digest adds its own calls. Latency has not been benchmarked for this search plan;
-  keep `STOCK_DIGEST_TIMEOUT` at 360 seconds or more.
+- A material run makes one model call (plus the cached alias lookup on a ticker's first
+  fetch). Keep `STOCK_DIGEST_TIMEOUT` at 120 seconds or more.
 
-The filters were relaxed on 2026-09-30 after a two-result NVDA run. The changes:
-- model-stated dates are accepted when search metadata has none;
-- "low" materiality and first-day date-only items pass;
-- deal counterparties count as the subject;
-- the size floor dropped from 0.1% to 0.01% of market value;
-- the verifier no longer rejects on importance alone.
+History: until 2026-10-06 material news ran a profile search, fifteen or more discovery
+searches, Yahoo feed classification, consolidation and up to 24 source-opening
+verifications (up to 44 agent runs), with a local SQLite cache. That pipeline is in git
+history before this change. `STOCK_DIGEST_CACHE_DIR` is no longer read by the app.
 
-Recall was raised with outlet-led and per-day searches and the Yahoo feed. The
-lookback selector was removed; the window is fixed at 7 days.
-
-Recall fixes (2026-10-01), after a TSLA run missed Tesla's September 28 postponement of the
-Roadster reveal. Live replays of the discovery step showed none of the eight searches surfaced
-it, while a dated search and a news-worded product search both did, and it passed every gate:
-- the seven per-day searches, dropped when the plan was cut to eight, are back;
-- the product search uses news verbs, and contracts and partnerships moved to the deals search;
-- a prompt example listed categories as "…, or excluded: …", so the model wrote
-  "excluded: analyst_commentary". Those candidates failed validation and the follow-up
-  searches were spent retrying them. The example now lists bare values, and the parser
-  strips the label;
-- yfinance returns an empty list rather than an error when Yahoo answers HTTP 429. An
-  empty feed now adds a coverage note.
-
-Tests: `tests/test_material.py` covers the specification's acceptance criteria offline
-(deduplication of copies and tracking URLs, two developments in one article, roundups and
-partner-led launches versus counterparty deals, routine items, refreshed dates, reported
-status, syndication, milestones, relative size, empty state versus failure, grounding,
-feed leads, tickers, timezones and boundaries). `tests/test_web.py` covers the streaming
-endpoint, including that the window cannot be changed.
-
-Live checks (2026-09-30), after relaxing the filters: two consecutive NVDA runs (CLI and
-UI endpoint, about 2.5 to 3 minutes each) returned the same four developments:
-- the $150B buyback authorization (NVIDIA investor relations);
-- China weighing permission for Alibaba and ByteDance to buy NVIDIA chips (reported,
-  Reuters citing The Information);
-- NVIDIA's talks with insurers on chip-backed loans (reported talks, FT via an authorized
-  republication);
-- the Open Agent Safety Platform launch.
-
-The verifier rejected about a dozen older stories that searches resurfaced. Examples: the
-Hugging Face acquisition (Sep 3), Q2 results (Aug 26) and the Meta partnership (Feb 17).
-The SpaceX partnership was announced Aug 24, 2026, outside the 7-day window.
-
-The UI tab was exercised in headless Chromium at desktop and phone widths: loading,
-result, empty state, research failure, invalid input, tab switching during a run, and
-Copy Markdown, with no page errors.
+Live checks (2026-10-06), combined runs through `/api/run`:
+- TSLA: 218 headlines over the week from Finnhub and Google News; material news kept 8
+  developments (Q3 deliveries, the $30B credit line, the Roadster delay, the SEC proxy
+  clearance, merger hints, among others). The digest's screen found no new catalyst since
+  Monday's close, so the digest fell back to the 8-K and market comparison. About 50
+  seconds and $0.02 in model cost for both tabs.
+- BRK-B: 61 headlines; the digest led with the Lennar stake increase. 41 seconds.
+- SHOP.TO: Finnhub's free tier refused the listing; material news came from Google News
+  with a coverage note, and the digest reported its US-only error. 21 seconds.
 
 ## Social Sentiment tab
 
@@ -395,9 +297,11 @@ in `stock_digest/social/`. The per-platform scrapers are copied byte-for-byte:
   `OPENAI_VERIFY_MODEL`) instead of Anthropic. Without a key it falls back to the Yahoo
   company name plus static seeds, as the original does.
 - `config.py` reads only the social settings, from the environment or `.env`.
-- `retrieval.py` keeps only the window table (adding `48h`) and URL canonicalization.
+- `retrieval.py` is the source file in full, plus a `48h` window. Its `fetch_news`
+  (Finnhub and Google News) is the digest's and material news' only news source, through
+  `stock_digest/news.py`; it needs `rapidfuzz` and `FINNHUB_API_KEY`.
 - `social.py` replaces the source's orchestration and its `/api/social` handler:
-  - Tickers resolve through Yahoo Finance; Finnhub is not used.
+  - Tickers resolve through Yahoo Finance, not Finnhub.
   - Each request fixes one UTC interval: it ends at the request time and starts exactly
     48 hours earlier, boundaries included. Every post is checked against the interval by
     publication time. Posts outside it are counted and not shown.
@@ -549,39 +453,31 @@ before the next open, against that session's close.
 
 ## Research and evidence
 
-Seven focused queries run, at most three at once, each limited to one hosted search
-(`max_tool_calls=1`, `max_turns=1`) with one automatic retry (in the UI's combined run
-only queries 1, 3, 4 and 7 run and the 7-day expansion is skipped; the material news
-agent supplies the rest, see above):
+News comes from the week's headline fetch (see "One fetch, two screens"). The catalyst
+screen (`CatalystScreen`, no tools, at most 8 items) reads the titles published since the
+previous regular-session close, or in the last 24 hours when that is earlier, and keeps
+only developments that are new in that window; titles that revisit or comment on an earlier
+announcement are skipped. Each kept development becomes one evidence packet per cited
+article: the provider's title and summary (Finnhub supplies summaries; Google News does
+not), the provider's publication time, the screen's `catalyst_type`, and a confirmation
+status from the screen's status (talks and unconfirmed reports become "unconfirmed",
+plain reports "reported", announcements "confirmed"). The writer and reviewer are told the
+articles were not opened.
 
-1. Stock news today.
-2. Press releases, restricted to the company's own domain, the major newswires and
-   sec.gov through the search tool's domain filter.
-3. Analyst upgrades, downgrades and price targets.
-4. Earnings date, guidance, buybacks and dividends (45-day search for announcements).
-5. Acquisitions, mergers and deal talks.
-6. Reported talks and anonymous-source reporting.
-7. Industry and market context.
-
-If fewer than three news findings survive, one more query expands the window from
-72 hours to 7 days, disclosed in coverage. When an earnings release is due within 30
-days, targeted searches run only for pieces Yahoo could not supply (estimates,
-comparable history, options), and only when at least 150 seconds of the run deadline
-remain. At most eleven searches run in total.
+The only web searches left are for earnings, each limited to one hosted search
+(`max_tool_calls=1`, `max_turns=1`) with one automatic retry: one search for the issuer's
+next earnings-release announcement (45 days), and, when a release is due within 30 days,
+targeted searches only for pieces Yahoo could not supply (estimates, comparable history,
+options), and only when at least 150 seconds of the run deadline remain. At most four
+searches run in total.
 
 Research returns a cited response with a JSON block, parsed and validated per finding.
-Source URLs come only from SDK search metadata and citation annotations. Each finding
-carries a confirmation status, a catalyst type and a move-relevance hint. Yahoo
-headlines must visibly name the company: names are matched without legal suffixes
-("Walt Disney", "Bank of America"), a short list of brand aliases covers cases such as
-Google, and the ticker counts only as `$A`, `(A)`, `NYSE: A` or, for tickers of three
-or more letters that are not common words, as a bare symbol.
+Source URLs come only from SDK search metadata and citation annotations.
 
 **Dates.** A research date counts only when the quoted dateline shows it: full dates in
 common formats, year-less "Sep 28" (resolved to its most recent occurrence), or "3 hours
 ago" relative to retrieval. A model-written clock time counts only when the dateline
-shows the same time and a compatible timezone; otherwise only the date is kept. A search
-result whose headline matches a Yahoo feed item inherits Yahoo's timestamp. Research
+shows the same time and a compatible timezone; otherwise only the date is kept. Research
 cannot overwrite provider timestamps. Findings with only an update date are kept.
 
 **Timing policy.** Every item is classified against the price observation:
@@ -594,7 +490,7 @@ cannot overwrite provider timestamps. Findings with only an update date are kept
 A date-only item from a later day, such as a weekend article after a Friday close, is
 classified as later, not unknown. Certain-causation wording is rejected in headlines.
 
-**Deduplication.** News is deduplicated by source and by headline across all queries;
+**Deduplication.** The fetch removes duplicate headlines; packets are deduplicated again by source and title;
 syndicated copies keep the most cautious confirmation status. Earnings-history research
 older than the news window may be cited only in the earnings preview.
 
@@ -636,10 +532,10 @@ only the basic Python checks run and flagged claims are removed the same way.
 
 ## Limits
 
-OpenAI research calls time out after 60 seconds and writer/reviewer calls after 90.
+OpenAI research calls time out after 60 seconds; screen, writer and reviewer calls after 90.
 The run deadline defaults to 480 seconds; later stages are skipped (earnings follow-ups,
 the review, the revision) when too little time remains, and every skip is disclosed.
-Structured Yahoo data is fetched in the background while research runs. SDK tracing is
+Structured Yahoo data is fetched in the background while the headlines are screened. SDK tracing is
 enabled and the CLI prints the trace link last. Responses use `store=False`.
 
 Not included: technical indicators, recommendations, historical mode, caching,

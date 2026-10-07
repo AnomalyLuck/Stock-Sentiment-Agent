@@ -16,7 +16,7 @@ from .market import DigestError, InputError
 from .models import Publication
 
 SETTINGS = ("OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_RESEARCH_MODEL", "OPENAI_VERIFY_MODEL",
-            "STOCK_DIGEST_TIMEOUT", "SEC_USER_AGENT", "STOCK_DIGEST_CACHE_DIR", "STOCK_DIGEST_MAX_RUNS")
+            "STOCK_DIGEST_TIMEOUT", "SEC_USER_AGENT", "STOCK_DIGEST_MAX_RUNS")
 
 
 @dataclass(frozen=True)
@@ -117,21 +117,24 @@ def digest_once(ticker: str, settings: Settings, stage) -> tuple[Publication, st
 
 def run_combined(raw_ticker: str, settings: Settings, stage, done, *, timezone: str = "UTC",
                  max_results: int | None = None, abort: tuple[type[BaseException], ...] = ()) -> str:
-    """Run the material-news agent and the digest together, under one trace and one deadline.
+    """Run material news and the digest together, under one trace and one deadline.
 
-    The digest consumes the material results (``manager.run_digest(material=...)``), so it
-    finishes after the material run. ``stage(kind, message)`` reports progress and
+    Both read one news fetch: the issuer is resolved once, the week's headlines are fetched once
+    (``news.fetch_week``), and each side screens them in parallel (the digest since the previous
+    close, material news over the week). ``stage(kind, message)`` reports progress and
     ``done(kind, result, error, trace_url)`` is called exactly once per kind ("material",
     "digest") as each side finishes; ``result`` is a ``MaterialResult`` or ``Publication``.
-    Each side fails on its own (a non-US ticker fails only the digest). Exceptions listed in
-    ``abort``, such as a closed browser connection, cancel both sides and propagate, as does the
-    run deadline. Returns the trace URL.
+    Each side fails on its own (a non-US ticker fails only the digest; a failed fetch fails
+    material news and leaves the digest without catalysts). Exceptions listed in ``abort``, such
+    as a closed browser connection, cancel both sides and propagate, as does the run deadline.
+    Returns the trace URL.
     """
     from agents import gen_trace_id, trace
     from .manager import gather_or_cancel, run_digest
     from .market import normalize_ticker
-    from .material.identity import parse_symbol
+    from .material.identity import parse_symbol, resolve_issuer
     from .material.pipeline import MaterialRequest, run_material
+    from .news import fetch_week
 
     enable_tracing(settings.api_key)
     trace_id = gen_trace_id()
@@ -153,18 +156,33 @@ def run_combined(raw_ticker: str, settings: Settings, stage, done, *, timezone: 
         with trace("Stock Digest", trace_id=trace_id, metadata={"ticker": raw_ticker.strip().upper()}):
             deadline = asyncio.get_running_loop().time() + settings.timeout
             request = MaterialRequest(ticker=raw_ticker, timezone=timezone, max_results=max_results)
-            material = asyncio.ensure_future(run_material(request, settings.api_key, settings.models,
-                                                          lambda message: stage("material", message), deadline=deadline))
+            issuer = asyncio.ensure_future(asyncio.to_thread(resolve_issuer, request.ticker, request.exchange))
+
+            async def week():
+                resolved = await issuer
+                return await fetch_week(resolved.ticker, resolved.company)
+
+            news = asyncio.ensure_future(week())
+            # Either side may fail before awaiting these; their errors are reported by the side that reads them.
+            for shared in (issuer, news):
+                shared.add_done_callback(lambda future: future.cancelled() or future.exception())
+            material = run_material(request, settings.api_key, settings.models,
+                                    lambda message: stage("material", message), deadline=deadline,
+                                    issuer=issuer, news=news)
 
             async def digest():
                 symbol, _ = parse_symbol(raw_ticker)
                 ticker = normalize_ticker(symbol)   # the digest covers US listings only
                 return await run_digest(ticker, settings.api_key, settings.models,
                                         lambda message: stage("digest", message),
-                                        verify=settings.verify, deadline=deadline, material=material)
+                                        verify=settings.verify, deadline=deadline, news=news)
 
-            async with asyncio.timeout_at(deadline):
-                await gather_or_cancel(settle("material", material), settle("digest", digest()))
+            try:
+                async with asyncio.timeout_at(deadline):
+                    await gather_or_cancel(settle("material", material), settle("digest", digest()))
+            finally:
+                for shared in (issuer, news):
+                    shared.cancel()
 
     try:
         asyncio.run(run())

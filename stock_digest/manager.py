@@ -5,29 +5,34 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from agents import ModelBehaviorError, RunConfig, Runner
 from openai import APIError, AuthenticationError, BadRequestError, NotFoundError, PermissionDeniedError
 from pydantic import ValidationError
 
-from .agents import NEWSWIRES, REVISION, api_error_message, build_agents, domain_research
+from .agents import REVISION, api_error_message, build_agents, build_screen
 from .catalysts import fetch_catalysts, fetch_implied_move
 from .costs import usage_client
 from .dates import (NY, availability_bound, date_in_passage, earliest_bound, is_date_only,
                     normalize_source_timestamp, time_in_passage, timestamp_bound)
 from .earnings import earnings_context, upcoming_earnings
-from .market import DigestError, InputError, fetch_market, fetch_news
-from .models import (CATALYST_TYPES, Claim, Digest, EarningsMetric, Finding, OptionsImpliedMove, Publication,
-                     ResearchEvidence, Source, VerificationResult, extended_phrase, move_phrase, price_phrase)
+from .market import DigestError, InputError, fetch_market
+from .models import (CATALYST_TYPES, CatalystScreen, Claim, Digest, EarningsMetric, Finding, OptionsImpliedMove,
+                     Publication, ResearchEvidence, Source, VerificationResult, extended_phrase, move_phrase,
+                     price_phrase)
+from .news import WeekNews, article_rows, catalyst_since, fetch_week, screen_gate
 
 # Seconds of run deadline that later stages need before they are started.
 FOLLOWUP_BUDGET = 150
 VERIFY_BUDGET = 100
 REVISION_BUDGET = 150
 CATALYST_WAIT = 30
-NEWS_PURPOSES = {"news", "news_feed", "earnings_event"}
+NEWS_PURPOSES = {"catalyst", "earnings_event"}
+MAX_CATALYSTS = 8
+# Screen statuses that leave a development a report rather than a confirmed fact.
+UNCONFIRMED_STATUSES = {"reported_talks", "under_consideration", "unconfirmed_report"}
 STRUCTURED_PURPOSES = {"structured_analyst", "structured_filing", "structured_earnings", "structured_insider"}
 RUMOR_LABEL = re.compile(r"\bunconfirmed\b|\breportedly\b|\breported talks\b", re.I)
 CERTAIN_CAUSE = re.compile(r"\b(?:because|driven by|due to|caused by|thanks to)\b", re.I)
@@ -213,18 +218,17 @@ def _base_packet(source: Source, **fields) -> dict:
         "confirmation_status": "reported", "catalyst_type": "other", "move_relevance": "context",
         "event_date": None, "earnings_date": None, "later_than_price": None, "price_timing_unknown": False,
         "story_key": "", "earnings_metrics": [], "options_implied_move": None, "structured": False,
-        "earnings_only": False, "material": False,
+        "earnings_only": False,
     }
     packet.update(fields)
     return packet
 
 
-def eligible_packets(evidence, sources, market, days, feed_titles: dict[str, Source] | None = None):
+def eligible_packets(evidence, sources, market, days):
     packets = []
     omitted = Counter()
     seen_stories = set()
     by_url = {source.url: source for source in sources}
-    feed_titles = feed_titles or {}
     for finding in evidence.findings:
         source = by_url.get(canonical_url(finding.url))
         if source is None:
@@ -254,11 +258,6 @@ def eligible_packets(evidence, sources, market, days, feed_titles: dict[str, Sou
                 published, timestamp_provenance = value, "research_extraction"
             if not updated and (value := substantiated(finding.updated)):
                 updated, timestamp_provenance = value, "research_extraction"
-            if not published and not updated and source.title != source.url:
-                # The same headline in Yahoo's feed carries a provider timestamp.
-                twin = feed_titles.get(normalized_title(source.title))
-                if twin is not None:
-                    published, timestamp_provenance = twin.published, "provider_feed"
         pub_bound = availability_bound(published, source.retrieved_at)
         update_bound = availability_bound(updated, source.retrieved_at)
         bound = max((b for b in (pub_bound, update_bound) if b is not None), default=None)
@@ -316,33 +315,6 @@ def eligible_packets(evidence, sources, market, days, feed_titles: dict[str, Sou
 LEGAL_WORDS = {"inc", "incorporated", "corp", "corporation", "company", "co", "ltd", "limited", "plc",
                "holdings", "holding", "group", "sa", "nv", "ag", "se", "llc", "lp", "the", "class",
                "adr", "ads", "common", "stock", "shares", "ordinary", "&", "and"}
-GENERIC_WORDS = {
-    "the", "of", "and", "bank", "general", "united", "american", "america", "americas", "national",
-    "international", "first", "global", "advanced", "applied", "digital", "new", "north", "south", "east",
-    "west", "super", "micro", "technology", "technologies", "tech", "systems", "software", "energy",
-    "pharmaceuticals", "pharmaceutical", "pharma", "therapeutics", "semiconductor", "semiconductors",
-    "financial", "services", "bancorp", "communications", "networks", "industries", "entertainment",
-    "brands", "foods", "resources", "solutions", "partners", "capital", "health", "healthcare", "labs",
-    "laboratories", "sciences", "biosciences", "bio", "devices", "instruments", "electric", "power",
-    "petroleum", "oil", "gas", "motor", "motors", "automotive", "airlines", "airline", "air", "express",
-    "trust", "insurance", "realty", "properties", "medical", "data", "media", "interactive", "retail",
-    "stores", "restaurants", "hotels", "resorts", "lines", "mining", "gold", "steel", "chemical",
-    "chemicals", "materials", "logistics", "transport", "platforms", "computer", "computers", "one",
-    "enterprises", "worldwide", "royal", "street", "wireless", "electronics", "semi", "machines", "business",
-}
-COMMON_TICKER_WORDS = {
-    "ALL", "ON", "IT", "NOW", "LOW", "KEY", "SO", "HAS", "AN", "BE", "ARE", "CAN", "FOR", "AND", "THE",
-    "ONE", "OUT", "BIG", "CAR", "DAY", "FUN", "GO", "NEW", "OPEN", "PLAY", "RUN", "SEE", "TWO", "WELL",
-    "WAY", "YOU", "ANY", "CAT", "EAT", "FAST", "FIVE", "GOOD", "HOME", "HOPE", "JOB", "LIFE", "LOVE",
-    "MAIN", "MAN", "NICE", "PEAK", "REAL", "SAFE", "SHOP", "TRUE", "WING", "ZIP", "CEO", "AI", "EV",
-    "US", "UK", "IPO", "ETF", "SEC", "FDA", "GDP", "CPI", "FED", "API", "AM", "PM", "OR", "IN", "AT",
-    "BY", "UP", "MORE", "BEST", "CASH", "FLY", "HE", "SHE", "WE", "MY", "ME", "NO", "YES", "TECH", "NICE",
-}
-BRAND_ALIASES = {"GOOGL": ("Google",), "GOOG": ("Google",), "META": ("Facebook", "Instagram", "WhatsApp"),
-                 "BAC": ("BofA",), "AXP": ("Amex",), "JNJ": ("J&J",), "PG": ("P&G",), "KO": ("Coke",),
-                 "GM": ("GM",), "BRK.A": ("Berkshire",), "BRK.B": ("Berkshire",), "HPE": ("HPE",)}
-
-
 def core_name(name: str) -> str:
     words = [w.strip(",.()") for w in name.replace(",", " ").split()]
     words = [w for w in words if w]
@@ -353,85 +325,41 @@ def core_name(name: str) -> str:
     return " ".join(words) or name
 
 
-def company_aliases(market) -> list[str]:
-    names = []
-    for name in filter(None, (market.company, getattr(market, "short_name", None))):
-        core = core_name(name)
-        names.append(core)
-        distinctive = [w for w in core.split() if len(w) > 2 and w.lower() not in GENERIC_WORDS]
-        names.extend(distinctive[:2])
-    names.extend(BRAND_ALIASES.get(market.ticker, ()))
-    return list(dict.fromkeys(names))
+def catalyst_packets(screened, fetched_at: datetime, market, first_id: int) -> tuple[list[Source], list[dict]]:
+    """Screened catalysts as sources and packets: provider titles, summaries and timestamps.
 
-
-def company_relevance(market):
-    """Match company names case-insensitively, and the ticker only in unambiguous forms."""
-    names = company_aliases(market)
-    name_re = re.compile(r"(?<!\w)(?:" + "|".join(re.escape(name) for name in names) + r")(?!\w)", re.I)
-    tickers = {market.ticker, market.ticker.replace(".", "-")}
-    forms = []
-    for ticker in tickers:
-        t = re.escape(ticker)
-        forms += [rf"\${t}\b", rf"\({t}\)", rf"\b(?:NYSE|NASDAQ|Nasdaq|NYSE American|AMEX|Cboe)\s*:\s*{t}\b"]
-        if len(ticker.replace(".", "").replace("-", "")) >= 3 and ticker not in COMMON_TICKER_WORDS:
-            forms.append(rf"(?<![A-Za-z0-9$.\-]){t}(?![A-Za-z0-9])")
-    ticker_re = re.compile("|".join(forms))
-    return lambda text: bool(name_re.search(text) or ticker_re.search(text))
-
-
-def yahoo_news_packets(rows, retrieved_at: datetime, market, first_id: int = 2) -> tuple[list[Source], list[dict], Counter]:
-    """Read provider titles, summaries and dates without asking a model to extract them."""
-    sources = []
-    packets = []
-    omitted = Counter()
-    seen = set()
-    # Yahoo's ticker stream can contain unrelated stories; require a visible match.
-    relevant = company_relevance(market)
-    for row in rows:
-        content = row.get("content")
-        if not isinstance(content, dict):
-            omitted["malformed feed item"] += 1
-            continue
-        title = content.get("title")
-        summary = content.get("summary")
-        summary = summary if isinstance(summary, str) else ""
-        if not isinstance(title, str) or not title.strip() or not relevant(title + " " + summary):
-            omitted["not visibly company-related"] += 1
-            continue
-        link = content.get("canonicalUrl") or content.get("clickThroughUrl") or {}
-        url = canonical_url(link.get("url", "")) if isinstance(link, dict) else None
-        published = normalize_source_timestamp(content.get("pubDate")) if isinstance(content.get("pubDate"), str) else None
-        bound = timestamp_bound(published)
-        if not url or bound is None:
-            omitted["missing feed URL/publication date"] += 1
-            continue
-        if not retrieved_at - timedelta(days=3) <= bound <= retrieved_at:
-            omitted["feed date outside the current 72-hour window"] += 1
-            continue
-        key = normalized_title(title)
-        if url in seen or key in seen:
-            continue
-        seen.update((url, key))
-        publisher = content.get("provider") or {}
-        publisher = publisher.get("displayName") if isinstance(publisher, dict) else None
-        source = Source(id=first_id + len(sources), url=url, title=title,
-                        publisher=publisher if isinstance(publisher, str) else (urlsplit(url).hostname or "Yahoo Finance"),
-                        retrieved_at=retrieved_at, raw_material=[title, summary], published=published,
-                        eligible_at=bound, timestamp_provenance="provider_feed")
-        set_source_timing(source, market.observed_at)
-        sources.append(source)
-        packets.append(_base_packet(
-            source, research_purpose="news_feed", company_in_headline=relevant(title),
-            # A company-named headline from the last 36 hours may bear on the move (timing still applies).
-            move_relevance="direct" if relevant(title) and bound >= market.observed_at - timedelta(hours=36) else "context",
-            researcher_summary_not_independent_evidence=summary or title,
-            supporting_material=title + ("\n" + summary if summary else ""),
-            evidence_provenance="provider_headline_and_summary",
-            reported_timestamp_basis="Yahoo Finance pubDate: " + published, story_key=key,
-            later_than_price=later_than_price(source, market.observed_at),
-            price_timing_unknown=source.price_timing_unknown,
-        ))
-    return sources, packets, omitted
+    The screen read titles only; its headline and why go in the researcher-summary slot, while
+    supporting material is the provider's own title and summary. One packet per cited article,
+    sharing the development's story key.
+    """
+    sources: list[Source] = []
+    packets: list[dict] = []
+    for number, kept in enumerate(screened, 1):
+        item = kept.item
+        confirmation = ("unconfirmed" if item.status in UNCONFIRMED_STATUSES
+                        else "reported" if item.status == "reported" else "confirmed")
+        for article in kept.articles:
+            url = canonical_url(article.url)
+            if not url:
+                continue
+            published = normalize_source_timestamp(article.published_at.isoformat(timespec="seconds"))
+            summary = " ".join(article.raw_snippet.split())[:600]
+            source = Source(id=first_id + len(sources), url=url, title=article.title, publisher=article.source,
+                            retrieved_at=fetched_at, raw_material=[text for text in (article.title, summary) if text],
+                            published=published, timestamp_provenance="provider_feed")
+            set_source_timing(source, market.observed_at)
+            sources.append(source)
+            packets.append(_base_packet(
+                source, research_purpose="catalyst", company_in_headline=True,
+                researcher_summary_not_independent_evidence=f"{item.headline} ({item.why})" if item.why else item.headline,
+                supporting_material=article.title + ("\n" + summary if summary else ""),
+                evidence_provenance="provider_headline_and_summary",
+                reported_timestamp_basis=f"{article.source} publication time: {published}",
+                confirmation_status=confirmation, catalyst_type=item.catalyst_type, move_relevance="direct",
+                story_key=f"catalyst-{number}", later_than_price=later_than_price(source, market.observed_at),
+                price_timing_unknown=source.price_timing_unknown, screen_status=item.status,
+            ))
+    return sources, packets
 
 
 # ---------------------------------------------------------------- structured catalysts
@@ -600,110 +528,6 @@ ITEM_TYPES = {"2.02": "earnings", "2.01": "merger_acquisition", "5.01": "merger_
               "4.02": "legal_regulatory", "1.05": "legal_regulatory"}
 
 
-# ---------------------------------------------------------------- material-news developments
-
-# Material-news statuses the company, a filing or the deciding authority confirmed, versus talks and rumors.
-MATERIAL_CONFIRMED = {"announced", "authorized", "agreed", "approved", "completed", "launched", "filed", "ruled", "scheduled"}
-MATERIAL_UNCONFIRMED = {"reported_talks", "under_consideration", "unconfirmed_report"}
-MATERIAL_OFFICIAL_SOURCES = {"official_release", "filing", "regulator"}
-MATERIAL_CATALYSTS = {
-    "earnings": "earnings", "guidance": "guidance", "capital_return": "buyback", "financing": "financing",
-    "merger_acquisition": "merger_acquisition", "divestiture": "merger_acquisition",
-    "strategic_investment": "merger_acquisition", "product_platform": "product",
-    "regulatory_market_access": "legal_regulatory", "litigation": "legal_regulatory",
-    "investigation": "legal_regulatory", "incident": "legal_regulatory", "leadership": "leadership",
-}
-
-
-def local_day(value: str | None) -> date | None:
-    """The New York calendar day of a date-only or offset-aware stamp; None when unparseable."""
-    normalized = normalize_source_timestamp(value)
-    if not normalized:
-        return None
-    if is_date_only(normalized):
-        return date.fromisoformat(normalized)
-    return datetime.fromisoformat(normalized).astimezone(NY).date()
-
-
-def material_evidence(result, market, sources: list[Source]) -> tuple[list[Source], list[dict], str]:
-    """Material-news developments first reported today or in the previous session, as sources and packets.
-
-    The material agent already verified these developments by opening their sources. Its key
-    facts are agent prose, so they go into the packet's supporting material (labeled as such),
-    while only tool-returned snippets become raw source material. Entries older than the
-    previous trading session stay in the Material news tab. Returns (new sources, packets, note).
-    """
-    by_url = {source.url: source for source in sources}
-    new_sources: list[Source] = []
-    packets: list[dict] = []
-    skipped = Counter()
-    entries = list(getattr(result, "qualified_entries", None) or result.entries)
-    for entry in entries:
-        day = local_day(entry.first_reported_at)
-        if day is None:
-            skipped["undated"] += 1
-            continue
-        if day < market.comparison_date:
-            skipped["older than the previous session"] += 1
-            continue
-        link = entry.sources[0] if entry.sources else {}
-        url = canonical_url(link.get("url") or "")
-        if not url:
-            skipped["no usable source URL"] += 1
-            continue
-        opened = entry.verification == "opened"
-        provenance = "material_verified" if opened else "research_extraction"
-        snippets = [s.strip() for s in link.get("snippets") or [] if isinstance(s, str) and s.strip()]
-        source = by_url.get(url)
-        if source is None:
-            publisher = link.get("publisher") or urlsplit(url).hostname or "Unknown publisher"
-            # Search metadata often lacks a page title (the registry then holds the host); show the development instead.
-            title = link.get("title") or ""
-            if not title or title in {publisher, urlsplit(url).hostname, link.get("url")}:
-                title = entry.headline
-            source = Source(id=len(sources) + len(new_sources) + 2, url=url, title=title, publisher=publisher,
-                            retrieved_at=result.run_at, raw_material=snippets,
-                            published=normalize_source_timestamp(entry.first_reported_at), timestamp_provenance=provenance)
-            new_sources.append(source)
-            by_url[url] = source
-        else:
-            source.raw_material = list(dict.fromkeys(source.raw_material + snippets))
-            if source.published is None and source.updated is None:
-                source.published = normalize_source_timestamp(entry.first_reported_at)
-                source.timestamp_provenance = provenance
-        set_source_timing(source, market.observed_at)
-        status = entry.status
-        confirmation = ("confirmed" if status in MATERIAL_CONFIRMED else
-                        "unconfirmed" if status in MATERIAL_UNCONFIRMED else "reported")
-        event_date = None
-        event_day = local_day(entry.event_date)
-        today = market.as_of.astimezone(NY).date()
-        if event_day and confirmation == "confirmed" and today <= event_day <= today + timedelta(days=30):
-            event_date = event_day.isoformat()
-        facts = [entry.headline, entry.why, *entry.key_facts]
-        material = "\n".join(dict.fromkeys(f.strip() for f in facts if isinstance(f, str) and f.strip()))
-        if entry.uncertainties:
-            material += "\nStated uncertainties: " + " ".join(u.strip() for u in entry.uncertainties if u.strip())
-        packets.append(_base_packet(
-            source, research_purpose="material", material=True, company_in_headline=True,
-            researcher_summary_not_independent_evidence=entry.why, supporting_material=material,
-            evidence_provenance="material_agent_verified_reading" if opened else "material_agent_search_results",
-            reported_timestamp_basis=f"Material-news agent first report: {entry.first_reported_at}",
-            timestamp_provenance=source.timestamp_provenance,
-            content_kind="dated_announcement" if link.get("source_type") in MATERIAL_OFFICIAL_SOURCES else "reporting",
-            confirmation_status=confirmation, catalyst_type=MATERIAL_CATALYSTS.get(entry.category, "other"),
-            move_relevance="direct", event_date=event_date, story_key=normalized_title(entry.event_id),
-            later_than_price=later_than_price(source, market.observed_at),
-            price_timing_unknown=source.price_timing_unknown,
-            material_status=entry.status_label, material_category=entry.category,
-        ))
-    note = (f"Material news: {len(packets)} of {len(entries)} qualifying development(s) dated today or the previous "
-            f"session supplied to the writer")
-    if skipped:
-        note += " (" + "; ".join(f"{count} {reason}" for reason, count in skipped.most_common()) + ")"
-    return new_sources, packets, note + "."
-
-
 # ---------------------------------------------------------------- cleanup and selection
 
 def dedupe_packets(packets: list[dict], sources: list[Source]) -> list[dict]:
@@ -743,7 +567,7 @@ def dedupe_packets(packets: list[dict], sources: list[Source]) -> list[dict]:
 def recent_headline_ids(packets, sources) -> list[int]:
     """Keep actual source titles visible independently of writer topic selection."""
     eligible = {packet["source_id"] for packet in packets
-                if (packet.get("research_purpose") in {"news", "news_feed"} or packet.get("material"))
+                if packet.get("research_purpose") == "catalyst"
                 and not packet.get("earnings_only")}
     direct = {packet["source_id"] for packet in packets if packet.get("company_in_headline")}
     candidates = [source for source in sources if source.id in eligible and source.title != source.url]
@@ -958,23 +782,17 @@ async def gather_or_cancel(*coroutines):
         raise
 
 
-def company_domain(website: str | None) -> str | None:
-    host = urlsplit(website or "").hostname
-    if not host:
-        return None
-    return host[4:] if host.startswith("www.") else host
-
-
 # ---------------------------------------------------------------- orchestration
 
 async def run_digest(ticker: str, openai_key: str, models: dict | str, stage, *, verify: bool = True,
-                     deadline: float | None = None, material=None) -> Publication:
+                     deadline: float | None = None, news=None) -> Publication:
     """One digest run.
 
-    ``material``, when given, is an awaitable material-news run (``MaterialResult``) for the same
-    company. The digest then skips its own company-development searches, waits for that run, and
-    feeds its developments from today or the previous session to the writer (``material_evidence``).
-    A failed material run fails the digest.
+    News comes from one fetch of the week's headlines (``news.fetch_week``); the catalyst screen
+    keeps today's catalysts from the titles since the previous close, and those become the
+    writer's news evidence. ``news``, when given, is an awaitable ``WeekNews`` shared with the
+    material-news run; otherwise the digest fetches its own. The only web searches left are the
+    earnings searches (the release date, and estimates/history/options when Yahoo lacks them).
     """
     if isinstance(models, str):
         models = {"research": models, "writer": models, "verifier": models}
@@ -991,34 +809,49 @@ async def run_digest(ticker: str, openai_key: str, models: dict | str, stage, *,
     catalysts_task = asyncio.ensure_future(asyncio.to_thread(fetch_catalysts, market, profile))
     sources: list[Source] = []
     packets: list[dict] = []
-    stage("Fetching recent Yahoo Finance headlines…")
+    stage("Reading the week's company headlines (Finnhub and Google News)…")
+    week: WeekNews | None = None
     try:
-        rows, retrieved_at = await fetch_news(ticker)
-        sources, packets, feed_omissions = yahoo_news_packets(rows, retrieved_at, market)
-        stage(f"Yahoo news: {len(packets)} dated, company-related headline(s) retained.")
-        diagnostics.append("Yahoo news titles, summaries and publication timestamps are provider-supplied; full articles were not independently fetched.")
-        if not packets and feed_omissions:
-            stage("Yahoo news filtering: " + "; ".join(f"{count} {reason}" for reason, count in feed_omissions.most_common(2)) + ".")
-    except DigestError as exc:
-        stage(str(exc) + " Continuing with web research.")
-        diagnostics.append(str(exc))
-    feed_titles = {normalized_title(source.title): source for source in sources}
+        week = await (news if news is not None else fetch_week(market.ticker, market.company))
+    except Exception as exc:
+        stage(f"News headlines unavailable ({type(exc).__name__}); continuing without them.")
+        diagnostics.append(f"News fetch failed ({type(exc).__name__}).")
+        coverage.append("News headlines could not be retrieved, so no catalysts were screened.")
+    since = catalyst_since(market, week.fetched_at if week else datetime.now(UTC))
+    rows = article_rows(week, since) if week else []
+    if week:
+        coverage.extend(week.notes)
+        diagnostics.append(f"News: {len(week.articles)} company headline(s) over 7 days from {week.providers}; "
+                           f"{len(rows)} since {since.isoformat(timespec='minutes')} screened by title only.")
     successes = 0
-    no_results = 0
-    extracted_count = 0
     omissions = Counter()
     semaphore = asyncio.Semaphore(3)
     async with usage_client(openai_key, "digest") as client:
         research, writer, verifier = build_agents(models, client, verify=verify)
-        domain = company_domain(market.website)
-        press_agent = domain_research(research, ([domain] if domain else []) + NEWSWIRES)
+        screen_agent = build_screen("digest", models["research"], client)
         run_config = RunConfig(tracing_disabled=False, trace_include_sensitive_data=True)
 
-        async def search(query: str, days: int, purpose="news", event=None, agent=None):
+        async def screen_today():
+            """Today's catalysts from the titles; (screen or None, failure or None)."""
+            if not rows:
+                return None, None
+            try:
+                result = await Runner.run(screen_agent, json.dumps({
+                    "ticker": market.ticker, "company": market.company, "as_of": datetime.now(UTC).isoformat(),
+                    "window_start": since.isoformat(), "articles": rows,
+                }), max_turns=1, run_config=run_config)
+                return result.final_output_as(CatalystScreen), None
+            except (AuthenticationError, PermissionDeniedError, NotFoundError, BadRequestError) as exc:
+                raise InputError(api_error_message(exc)) from None
+            except Exception as exc:
+                # No exception bodies: they can contain request data, source text, or credentials.
+                return None, f"Catalyst screen failed: {api_error_message(exc)}"
+
+        async def search(query: str, days: int, purpose: str, event=None):
             async with semaphore:
                 try:
                     search_as_of = datetime.now(UTC)
-                    result = await Runner.run(agent or research, json.dumps({
+                    result = await Runner.run(research, json.dumps({
                         "query": query, "as_of": search_as_of.isoformat(),
                         "price_observed_at": market.observed_at.isoformat(),
                         "news_start": (search_as_of - timedelta(days=days)).isoformat(),
@@ -1043,17 +876,14 @@ async def run_digest(ticker: str, openai_key: str, models: dict | str, stage, *,
                     stage(failure)
                     return None, [], failure, []
 
-        def merge(result, days, purpose="news"):
-            nonlocal successes, no_results, extracted_count
+        def merge(result, days, purpose):
+            nonlocal successes
             evidence, found, failure, parsing_notes = result
             diagnostics.extend(parsing_notes)
             if failure:
                 diagnostics.append(failure)
                 return
             successes += 1
-            extracted_count += len(evidence.findings)
-            if evidence.status == "no_relevant_results":
-                no_results += 1
             existing = {s.url: s for s in sources}
             for source in found:
                 if source.url in existing:
@@ -1073,7 +903,7 @@ async def run_digest(ticker: str, openai_key: str, models: dict | str, stage, *,
                     source.id = len(sources) + 2
                     sources.append(source)
                     existing[source.url] = source
-            accepted, omitted = eligible_packets(evidence, sources, market, days, feed_titles)
+            accepted, omitted = eligible_packets(evidence, sources, market, days)
             for packet in accepted:
                 packet["query"] = evidence.query
                 packet["research_purpose"] = purpose
@@ -1081,36 +911,28 @@ async def run_digest(ticker: str, openai_key: str, models: dict | str, stage, *,
             omissions.update(omitted)
 
         name = core_name(market.company)
-        topic = market.industry or market.sector or "stock market"
-        rumor_query = f"{name} reportedly in talks people familiar with the matter"
-        # (query, search days, news window, purpose, agent, covered by the material-news agent)
-        plan = [item[:5] for item in (
-            (f"{name} ({ticker}) stock news today", 3, 3, "news", None, False),
-            (f"{name} press release announcement", 3, 3, "news", press_agent, True),
-            (f"{ticker} {name} analyst upgrade downgrade price target", 3, 3, "news", None, False),
-            (f"{name} earnings date guidance buyback dividend announcement", 45, 3, "earnings_event", None, False),
-            (f"{name} acquisition merger deal talks", 3, 3, "news", None, True),
-            (rumor_query, 3, 3, "news", None, True),
-            (f"{topic} stocks today stock market news", 3, 3, "news", None, False),
-        ) if material is None or not item[5]]
-        stage(f"Researching {len(plan)} focused queries (up to three at once)…")
-        results = await gather_or_cancel(*(search(query, search_days, purpose, agent=agent)
-                                           for query, search_days, _, purpose, agent in plan))
-        for result, (_, _, window, purpose, _) in zip(results, plan):
-            # Only dated future announcements get the older-publication exception.
-            merge(result, window, purpose)
-        query_count = len(plan)
         days = 3
-        news_count = sum(packet.get("research_purpose") in NEWS_PURPOSES for packet in packets)
-        # The material-news agent already covers the week, so the expansion query runs only without it.
-        if material is None and successes and news_count < 3 and remaining() > FOLLOWUP_BUDGET:
-            days = 7
-            reasons = "; ".join(f"{count} {reason}" for reason, count in omissions.most_common(2))
-            detail = f" ({reasons})" if reasons else ""
-            stage(f"Only {news_count} usable news findings across Yahoo news and {extracted_count} extracted search findings{detail}; expanding one query to seven days…")
-            coverage.append("News window expanded from 72 hours to 7 days because eligible evidence was sparse.")
-            merge(await search(f"{name} ({ticker}) stock news this week", 7), 7)
-            query_count += 1
+        # The issuer's earnings-date announcement outranks Yahoo's calendar (earnings.upcoming_earnings).
+        date_query = f"{name} ({ticker}) next quarterly earnings release date announcement"
+        stage(f"Screening {len(rows)} headline(s) for today's catalysts and searching for the earnings date…")
+        (screen, screen_failure), date_result = await gather_or_cancel(screen_today(), search(date_query, 45, "earnings_event"))
+        # The week's headlines were fetched and screened (an empty window counts as checked).
+        news_checked = week is not None and screen_failure is None
+        catalyst_count = 0
+        if screen_failure:
+            stage(screen_failure)
+            diagnostics.append(screen_failure)
+            coverage.append("The headline screen did not run, so today's catalysts are missing.")
+        elif screen is not None:
+            screened, notes = screen_gate(screen, week, rows, MAX_CATALYSTS)
+            diagnostics.extend(notes)
+            new_sources, new_packets = catalyst_packets(screened, week.fetched_at, market, len(sources) + 2)
+            sources.extend(new_sources)
+            packets.extend(new_packets)
+            catalyst_count = len(screened)
+            stage(f"Catalyst screen: {catalyst_count} catalyst(s) kept from {len(rows)} headline(s).")
+        merge(date_result, days, "earnings_event")
+        query_count = 1
 
         catalysts = None
         try:
@@ -1170,22 +992,6 @@ async def run_digest(ticker: str, openai_key: str, models: dict | str, stage, *,
                 for result, (_, window_days, purpose) in zip(extra, followups):
                     merge(result, window_days, purpose)
                 query_count += len(followups)
-        if material is not None:
-            stage("Waiting for the material-news developments…")
-            try:
-                material_result = await material
-            except Exception as exc:
-                raise DigestError("The digest was not written because the material-news research failed; "
-                                  "see the Material news result for the reason.") from exc
-            if material_result.issuer.symbol.upper() != market.ticker.replace(".", "-").upper():
-                raise DigestError(f"The material-news run resolved {material_result.issuer.symbol}, not {market.ticker}.")
-            new_sources, new_packets, note = material_evidence(material_result, market, sources)
-            sources.extend(new_sources)
-            packets = new_packets + packets      # first, so feed/search copies of the same URL merge into them
-            diagnostics.append(note)
-            stage(note)
-            if not new_packets:
-                coverage.append("The material-news check found no company development dated today or the previous session.")
         packets = dedupe_packets(packets, sources)
         # A later response can expose a conflicting/newer update on a previously
         # accepted URL. Recheck the merged registry before publication eligibility.
@@ -1207,12 +1013,9 @@ async def run_digest(ticker: str, openai_key: str, models: dict | str, stage, *,
                                            and source.eligible_at < news_as_of - timedelta(days=days))
         for reason, count in omissions.items():
             diagnostics.append(f"{count} finding(s) omitted: {reason}.")
-        feed_count = sum(packet.get("research_purpose") == "news_feed" for packet in packets)
         structured_count = sum(packet["structured"] for packet in packets)
-        material_count = sum(packet["material"] for packet in packets)
-        stage(f"Research complete: {successes}/{query_count} queries succeeded; {len(packets)} usable finding(s), "
-              f"including {feed_count} Yahoo headline(s), {structured_count} structured record(s)"
-              + (f" and {material_count} material-news development(s)." if material is not None else "."))
+        stage(f"Research complete: {catalyst_count} catalyst(s) from the headlines, {structured_count} structured "
+              f"record(s), {successes}/{query_count} earnings search(es) succeeded; {len(packets)} usable finding(s).")
 
         preview = None
 
@@ -1223,17 +1026,11 @@ async def run_digest(ticker: str, openai_key: str, models: dict | str, stage, *,
                                diagnostics=list(dict.fromkeys(diagnostics)), earnings=preview)
 
         if not packets:
-            if successes == 0:
-                coverage.append("News/context unavailable. All research queries failed or were unavailable.")
-            elif no_results == successes:
-                coverage.append("Searches completed with no relevant findings. No clear company-specific catalyst was identified in the sources checked.")
+            if news_checked:
+                coverage.append("No clear company-specific catalyst was identified in the headlines checked.")
+                stage("Price-only result: no catalysts in the screened headlines and no structured records.")
             else:
-                coverage.append("News/context unavailable: searches ran, but no findings met source-content and cutoff checks. This does not establish an absence of news or a catalyst.")
-            reasons = "; ".join(f"{count} {reason}" for reason, count in omissions.items())
-            if not reasons:
-                reasons = ("all research queries failed" if not successes else
-                           "searches returned no eligible findings; some responses may have been unavailable or malformed")
-            stage(f"Price-only result: {reasons}.")
+                stage("Price-only result: the news headlines or the headline screen were unavailable.")
             return publication()
 
         used = {packet["source_id"] for packet in packets}
@@ -1252,7 +1049,7 @@ async def run_digest(ticker: str, openai_key: str, models: dict | str, stage, *,
             diagnostics.append("Date-only same-day articles are labeled; they may coincide with the move but cannot be ordered before it.")
         preview = earnings_context(event, packets, supplied_sources, market, structured_earnings)
         explanations = move_explanations(packets)
-        catalyst_status = ("research_unavailable" if not successes and not structured_count
+        catalyst_status = ("research_unavailable" if not news_checked and not structured_count
                            else "candidates" if explanations else "none_identified")
         if any(p["evidence_provenance"] == "research_extraction" or p["timestamp_provenance"] == "research_extraction" for p in packets):
             diagnostics.append("Some passages/dates were extracted by the research model from cited search results; original article text was not independently retrieved.")
@@ -1260,9 +1057,8 @@ async def run_digest(ticker: str, openai_key: str, models: dict | str, stage, *,
             "market_source_id": 1, "market": market.model_dump(mode="json"),
             "price_phrase": price_phrase(market), "move_phrase": move_phrase(market),
             "extended_hours_phrase": extended_phrase(market),
-            "news_window_days": days, "news_as_of": news_as_of.isoformat(),
-            "material_window": ({"from": market.comparison_date.isoformat(), "to": market.session_date.isoformat(),
-                                 "developments": material_count} if material is not None else None),
+            "news_as_of": news_as_of.isoformat(),
+            "catalyst_window": {"from": since.isoformat(), "to": news_as_of.isoformat(), "catalysts": catalyst_count},
             "today_local": news_as_of.astimezone(NY).strftime("%A, %B %-d, %Y (America/New_York)"),
             "catalyst_status": catalyst_status, "possible_move_explanations": explanations,
             "source_registry": [s.model_dump(mode="json", exclude={"raw_material"}) for s in supplied_sources],

@@ -68,25 +68,6 @@ def _configure_yahoo() -> None:
     logging.getLogger("yfinance").disabled = True
 
 
-async def fetch_news(ticker: str) -> tuple[list[dict], datetime]:
-    return await asyncio.to_thread(_fetch_news, ticker)
-
-
-def _fetch_news(ticker: str) -> tuple[list[dict], datetime]:
-    _configure_yahoo()
-    try:
-        rows = yf.Ticker(ticker.replace(".", "-")).get_news(count=30, tab="news")
-        if not isinstance(rows, list):
-            raise DigestError("Yahoo Finance returned malformed news data.")
-        return [row for row in rows if isinstance(row, dict)], datetime.now(UTC)
-    except DigestError:
-        raise
-    except YFRateLimitError:
-        raise DigestError("Yahoo Finance news rate limit reached.") from None
-    except Exception as exc:
-        raise DigestError(f"Yahoo Finance news unavailable ({type(exc).__name__}).") from None
-
-
 def _fetch_market(ticker: str) -> tuple[MarketSnapshot, dict]:
     _configure_yahoo()
     try:
@@ -294,6 +275,7 @@ def _snapshot(ticker: str) -> tuple[MarketSnapshot, dict]:
         price=price, comparison_close=comparison, absolute_change=change,
         percent_change=Decimal(100) * change / comparison,
         session_date=session_date, comparison_date=comparison_date,
+        comparison_session_close=calendar.session_close(previous).to_pydatetime(),
         session_open=opening, session_close=closing, observed_at=observed, as_of=as_of,
         price_type=price_type, volume=volume,
         volume_start=opening if volume is not None else None,

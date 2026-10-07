@@ -146,6 +146,8 @@ pytz==2026.4
     # via yfinance
 pywin32==312 ; sys_platform == 'win32'
     # via mcp
+rapidfuzz==3.14.6
+    # via stock-digest (pyproject.toml)
 referencing==0.37.0
     # via
     #   jsonschema

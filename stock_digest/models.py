@@ -16,6 +16,12 @@ CatalystType = Literal[
     "legal_regulatory", "leadership", "financing", "insider", "macro_sector", "other",
 ]
 CATALYST_TYPES = set(CatalystType.__args__)
+# How far a development has got, as its sources establish it. Material news shows the label;
+# the digest maps it to a confirmation status.
+Status = Literal[
+    "announced", "authorized", "agreed", "approved", "completed", "launched", "filed", "ruled",
+    "scheduled", "reported", "reported_talks", "under_consideration", "unconfirmed_report",
+]
 
 
 class ExtendedHours(Contract):
@@ -63,6 +69,8 @@ class MarketSnapshot(Contract):
     comparison_date: date
     session_open: AwareDatetime
     session_close: AwareDatetime
+    # The regular-session close the change is measured from (comparison_date's close).
+    comparison_session_close: AwareDatetime | None = None
     observed_at: AwareDatetime
     as_of: AwareDatetime
     price_type: Literal["completed regular-session close", "regular-session minute-bar close"]
@@ -203,9 +211,22 @@ class Source(Contract):
     eligible_at: AwareDatetime | None = None
     price_timing_unknown: bool = False
     unconfirmed_report: bool = False
-    # "material_verified": the material-news agent opened the page and confirmed the date.
     timestamp_provenance: Literal["unavailable", "tool_metadata", "research_extraction", "provider_feed",
-                                  "provider_structured", "material_verified"] = "unavailable"
+                                  "provider_structured"] = "unavailable"
+
+
+class HeadlineCatalyst(Contract):
+    """One development a headline screen kept. Read from titles only; articles are never opened."""
+    article_ids: list[str] = Field(min_length=1)
+    headline: str = Field(min_length=1)
+    catalyst_type: CatalystType
+    status: Status
+    why: str
+
+
+class CatalystScreen(Contract):
+    """A headline screen's output (the digest's today screen and the material week screen)."""
+    catalysts: list[HeadlineCatalyst]
 
 
 class Claim(Contract):

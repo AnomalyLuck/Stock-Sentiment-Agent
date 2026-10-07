@@ -18,7 +18,7 @@ def window_text(result: MaterialResult) -> str:
 def limit_note(result: MaterialResult) -> str | None:
     if result.max_results is None or result.qualified_count <= result.max_results:
         return None
-    return (f"Limited to the {result.max_results} strongest of {result.qualified_count} qualifying developments, "
+    return (f"Limited to the {result.max_results} most recent of {result.qualified_count} qualifying developments, "
             "as requested.")
 
 
@@ -34,7 +34,8 @@ def markdown(result: MaterialResult) -> str:
     ticker = result.issuer.ticker
     lines = [f"**{ticker} — material company developments**", "",
              f"**Window:** {window_text(result)}. One entry per distinct development; "
-             "dates below are announcement or reporting dates."]
+             "dates below are announcement or reporting dates. Screened from headlines; "
+             "the articles were not opened."]
     if note := limit_note(result):
         lines += ["", note]
     lines.append("")

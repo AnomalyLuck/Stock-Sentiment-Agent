@@ -1,20 +1,19 @@
-"""Offline end-to-end runs of run_digest with Yahoo and OpenAI replaced by fakes."""
+"""Offline end-to-end runs of run_digest with Yahoo, the news fetch and OpenAI replaced by fakes."""
 import asyncio
 import json
-from datetime import timedelta
 from types import SimpleNamespace
 
-import pytest
 from agents import ModelBehaviorError
 
 import stock_digest.manager as manager
-from conftest import AS_OF, CLOSE, make_market
-from stock_digest.market import DigestError
-from stock_digest.material.models import Entry, Issuer, MaterialResult
-from stock_digest.models import Claim, Digest, Topic, VerificationResult
+from conftest import AS_OF, make_article, make_market, make_week
+from stock_digest.models import CatalystScreen, Claim, Digest, HeadlineCatalyst, Topic, VerificationResult
 
-ARTICLE = "https://news.example/acme-deal"
-BUYBACK = "https://nvidianews.example/buyback"
+DEAL = make_article("Acme to buy Beta for $2.1 billion", hours_before_as_of=14, source="Reuters",
+                    url="https://news.example/acme-deal", snippet="Acme agreed to buy Beta in cash.")
+SATURDAY = make_article("Acme names a new finance chief", hours_before_as_of=50, source="CNBC")
+OLD = make_article("Acme opens a new office", hours_before_as_of=24 * 6, source="Business Wire")
+LIST = make_article("3 chip stocks to buy now, including Acme", hours_before_as_of=2, source="Motley Fool")
 
 
 class FakeResult:
@@ -25,62 +24,61 @@ class FakeResult:
         return self.final_output
 
 
-def research_result():
-    finding = {"summary": "Acme agreed to buy Beta.", "url": ARTICLE, "reported_excerpt": None,
-               "published": "2026-09-28T08:00:00-04:00", "updated": None,
-               "timestamp_basis": "Sep 28, 2026 8:00 AM ET", "content_kind": "dated_announcement",
-               "confirmation_status": "confirmed", "catalyst_type": "merger_acquisition",
-               "move_relevance": "direct", "event_date": None, "earnings_date": None, "story_key": "acme-beta"}
-    text = "```json\n" + json.dumps({"query": "q", "status": "findings", "findings": [finding]}) + "\n```"
-    call = {"type": "web_search_call", "status": "completed",
-            "action": {"type": "search", "sources": [{"url": ARTICLE, "title": "Acme to buy Beta"}]}}
-    return FakeResult(text, [SimpleNamespace(output=[call])])
+def no_findings():
+    text = "```json\n" + json.dumps({"query": "q", "status": "no_relevant_results", "findings": []}) + "\n```"
+    return FakeResult(text, [SimpleNamespace(output=[{"type": "web_search_call", "status": "completed",
+                                                      "action": {"type": "search", "sources": []}}])])
 
 
-def feed_rows():
-    stamp = (CLOSE - timedelta(hours=3)).isoformat()
-    return [{"content": {"title": "NVIDIA shares climb", "summary": "", "pubDate": stamp,
-                         "provider": {"displayName": "Wire"}, "canonicalUrl": {"url": "https://wire.example/nvda"}}}]
+def deal_screen(payload):
+    """Keep the deal (by id), skip the stock list."""
+    ids = {row["title"]: row["id"] for row in payload["articles"]}
+    return CatalystScreen(catalysts=[HeadlineCatalyst(
+        article_ids=[ids[DEAL.title]], headline="Acme agrees to buy Beta for $2.1 billion",
+        catalyst_type="merger_acquisition", status="agreed", why="a large cash acquisition")])
 
 
-def patch_providers(monkeypatch, writer_output, verdict=None):
+def patch_providers(monkeypatch, writer_output, verdict=None, screen=deal_screen):
     async def fake_market(ticker):
         return make_market(), {}
 
-    async def fake_news(ticker):
-        return feed_rows(), AS_OF
+    async def fake_week(ticker, company):
+        seen["fetches"] += 1
+        return make_week(DEAL, SATURDAY, OLD, LIST)
 
     def fake_catalysts(market, profile):
         return {"retrieved_at": AS_OF.isoformat(), "symbol": "NVDA", "diagnostics": [], "earnings": {},
                 "estimates": None, "revenue_history": [], "analyst_actions": [], "price_targets": None,
                 "insider": [], "filings": [], "benchmarks": [], "dividendDate": None, "exDividendDate": None}
 
-    calls = []
-
     async def fake_run(agent, payload, **kwargs):
-        calls.append(agent.name)
+        seen["calls"].append(agent.name)
+        payload = json.loads(payload)
+        if agent.name == "CatalystScreen":
+            seen["screened"] = [row["title"] for row in payload["articles"]]
+            if isinstance(screen, Exception):
+                raise screen
+            return FakeResult(screen(payload))
         if agent.name == "StockResearch":
-            queries.append(json.loads(payload)["query"])
-            return research_result()
+            seen["queries"].append(payload["query"])
+            return no_findings()
         if agent.name == "StockWriter":
             if isinstance(writer_output, Exception):
                 raise writer_output
-            return FakeResult(writer_output(json.loads(payload)))
+            return FakeResult(writer_output(payload))
         return FakeResult(verdict)
 
+    seen = {"calls": [], "queries": [], "screened": [], "fetches": 0}
     monkeypatch.setattr(manager, "fetch_market", fake_market)
-    monkeypatch.setattr(manager, "fetch_news", fake_news)
+    monkeypatch.setattr(manager, "fetch_week", fake_week)
     monkeypatch.setattr(manager, "fetch_catalysts", fake_catalysts)
     monkeypatch.setattr(manager, "Runner", SimpleNamespace(run=fake_run))
-    return calls
-
-
-queries: list[str] = []   # research queries seen by the fake Runner (reset per test by patch_providers callers)
+    return seen
 
 
 def writer_with(bad_citation: bool):
     def write(payload):
-        deal = next(p["source_id"] for p in payload["evidence"] if p.get("story_key") == "acme beta")
+        deal = next(p["source_id"] for p in payload["evidence"] if p["research_purpose"] == "catalyst")
         topics = [Topic(heading=Claim(text="Acme deal", sources=[deal]),
                         sentences=[Claim(text="On Sept. 28, Acme agreed to buy Beta.", sources=[deal])])]
         if bad_citation:
@@ -91,27 +89,24 @@ def writer_with(bad_citation: bool):
     return write
 
 
-def run(verify, material=None):
-    queries.clear()
-    return asyncio.run(manager.run_digest("NVDA", "sk-test", "gpt-test", lambda _msg: None, verify=verify, material=material))
+def run(verify, news=None):
+    return asyncio.run(manager.run_digest("NVDA", "sk-test", "gpt-test", lambda _msg: None, verify=verify, news=news))
 
 
 def test_default_mode_prunes_invalid_claims(monkeypatch):  # B10
-    calls = patch_providers(monkeypatch, writer_with(bad_citation=True))
+    seen = patch_providers(monkeypatch, writer_with(bad_citation=True))
     publication = run(verify=False)
     assert [t.heading.text for t in publication.digest.topics] == ["Acme deal"]
     assert any("removed after failing basic checks" in note for note in publication.coverage)
-    assert "StockVerifier" not in calls
-    # Compact numbering: the two headline/claim sources are 2 and 3.
-    assert sorted(s.id for s in publication.sources) == [2, 3]
+    assert "StockVerifier" not in seen["calls"]
+    assert [s.url for s in publication.sources] == [DEAL.url] and publication.sources[0].id == 2
 
 
 def test_verified_publish(monkeypatch):  # 4.5
-    calls = patch_providers(monkeypatch, writer_with(bad_citation=False), VerificationResult(passed=True, issues=[]))
+    seen = patch_providers(monkeypatch, writer_with(bad_citation=False), VerificationResult(passed=True, issues=[]))
     publication = run(verify=True)
-    assert publication.digest is not None and "StockVerifier" in calls
+    assert publication.digest is not None and "StockVerifier" in seen["calls"]
     assert any("checked by a model reviewer" in note for note in publication.coverage)
-    # The dated deal announcement preceded the close, so it is a move-explanation candidate.
     assert publication.digest.topics[0].heading.text == "Acme deal"
 
 
@@ -122,60 +117,55 @@ def test_writer_failure_falls_back_to_headlines(monkeypatch):
     assert any("could not be generated" in note for note in publication.coverage)
 
 
-# ---------------------------------------------------------------- with the material-news run supplied
+def test_screen_reads_titles_since_the_previous_close_and_only_earnings_are_searched(monkeypatch):
+    def check_payload(payload):
+        catalyst = next(p for p in payload["evidence"] if p["research_purpose"] == "catalyst")
+        assert catalyst["source_id"] in payload["possible_move_explanations"]     # published before the close
+        assert payload["catalyst_window"]["catalysts"] == 1
+        assert catalyst["supporting_material"] == DEAL.title + "\nAcme agreed to buy Beta in cash."
+        return writer_with(bad_citation=False)(payload)
 
-async def material_run(symbol="NVDA"):
-    issuer = Issuer(ticker=symbol.replace("-", "."), symbol=symbol, exchange="NasdaqGS", company="NVIDIA Corporation")
-    buyback = Entry(event_id="E1", date="Sep 28, 2026", headline="NVIDIA authorizes $60B buyback", reported=False,
-                    status="authorized", status_label="authorized", category="capital_return",
-                    why="The board authorized $60 billion of repurchases.", verification="opened",
-                    sources=[{"url": BUYBACK, "publisher": "NVIDIA", "title": "NVIDIA announces buyback", "published": None,
-                              "snippets": [], "source_type": "official_release"}],
-                    first_reported_at="2026-09-28T08:00:00-04:00", key_facts=["$60 billion authorization"])
-    old = buyback.model_copy(update={"event_id": "E2", "first_reported_at": "2026-09-22", "sources": [{"url": "https://wire.example/old"}]})
-    return MaterialResult(issuer=issuer, run_at=AS_OF, window_start=AS_OF - timedelta(days=7), window_end=AS_OF,
-                          timezone="UTC", hours=168, entries=[buyback, old], qualified_entries=[buyback, old], qualified_count=2)
-
-
-def writer_citing_material(payload):
-    packet = next(p for p in payload["evidence"] if p.get("material"))
-    assert payload["evidence"][0] is packet and payload["material_window"]["developments"] == 1
-    assert packet["source_id"] in payload["possible_move_explanations"]
-    topics = [Topic(heading=Claim(text="Record buyback", sources=[packet["source_id"]]),
-                    sentences=[Claim(text="NVIDIA shares rose today after the board authorized a $60 billion buyback.",
-                                     sources=[packet["source_id"]])])]
-    return Digest(headline=Claim(text="NVIDIA climbs after authorizing a $60 billion buyback", sources=[1, packet["source_id"]]),
-                  topics=topics, coverage_notes=[])
+    seen = patch_providers(monkeypatch, check_payload)
+    run(verify=False)
+    # Monday run: Saturday's headline is inside the window (since Friday's close), last week's is not.
+    assert seen["screened"] == [LIST.title, DEAL.title, SATURDAY.title]
+    assert len(seen["queries"]) == 1 and "earnings release date" in seen["queries"][0]
+    assert seen["fetches"] == 1
 
 
-def test_material_run_replaces_company_development_searches(monkeypatch):
-    patch_providers(monkeypatch, writer_citing_material, VerificationResult(passed=True, issues=[]))
-    publication = run(verify=True, material=material_run())
-    assert len(queries) == 4
-    assert not any(word in q for q in queries for word in ("press release", "acquisition", "reportedly", "this week"))
-    assert publication.digest.topics[0].heading.text == "Record buyback"
-    cited = next(s for s in publication.sources if s.url == BUYBACK)
-    assert cited.timestamp_provenance == "material_verified" and cited.published == "2026-09-28T08:00:00-04:00"
-    assert any(note.startswith("Material news: 1 of 2") for note in publication.diagnostics)
+def test_shared_news_is_not_fetched_again(monkeypatch):
+    seen = patch_providers(monkeypatch, writer_with(bad_citation=False))
+
+    async def shared():
+        return make_week(DEAL, providers="Google News", notes=["Finnhub's free tier does not cover this listing."])
+
+    publication = run(verify=False, news=shared())
+    assert seen["fetches"] == 0 and publication.digest is not None
+    assert "Finnhub's free tier does not cover this listing." in publication.coverage
 
 
-def test_material_run_failure_fails_the_digest(monkeypatch):
-    patch_providers(monkeypatch, writer_citing_material)
+def test_news_failure_leaves_a_price_only_digest(monkeypatch):
+    seen = patch_providers(monkeypatch, writer_with(bad_citation=False))
 
     async def failing():
-        raise DigestError("Research could not be completed.")
+        raise RuntimeError("both providers down")
 
-    with pytest.raises(DigestError, match="material-news research failed"):
-        run(verify=False, material=failing())
-
-
-def test_material_run_for_another_company_is_rejected(monkeypatch):
-    patch_providers(monkeypatch, writer_citing_material)
-    with pytest.raises(DigestError, match="resolved AMD, not NVDA"):
-        run(verify=False, material=material_run("AMD"))
+    publication = run(verify=False, news=failing())
+    assert publication.digest is None and "CatalystScreen" not in seen["calls"]
+    assert any("could not be retrieved" in note for note in publication.coverage)
 
 
-def test_without_material_the_seven_queries_still_run(monkeypatch):
-    patch_providers(monkeypatch, writer_with(bad_citation=False))
-    run(verify=False)
-    assert len(queries) == 8 and any("this week" in q for q in queries)   # 7 focused queries plus the 7-day expansion
+def test_screen_failure_is_reported_not_treated_as_no_news(monkeypatch):
+    patch_providers(monkeypatch, writer_with(bad_citation=False), screen=RuntimeError("model down"))
+    publication = run(verify=False)
+    assert publication.digest is None
+    assert any("headline screen did not run" in note for note in publication.coverage)
+    assert not any("No clear company-specific catalyst" in note for note in publication.coverage)
+
+
+def test_empty_screen_reports_no_catalyst(monkeypatch):
+    patch_providers(monkeypatch, writer_with(bad_citation=False), screen=lambda payload: CatalystScreen(catalysts=[]))
+    publication = run(verify=False)
+    assert publication.digest is None
+    assert any("No clear company-specific catalyst was identified in the headlines checked." in note
+               for note in publication.coverage)

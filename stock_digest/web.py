@@ -1,8 +1,8 @@
 """Local browser UI: one page, three streaming endpoints and one JSON endpoint.
 
-Binds to 127.0.0.1 only. GET /api/run?ticker=NVDA&tz=America/New_York&max=5 runs the
-material-news agent and the digest together (the digest consumes the material results) and
-streams newline-delimited JSON tagged by kind: {"type": "stage", "kind": "digest" | "material",
+Binds to 127.0.0.1 only. GET /api/run?ticker=NVDA&tz=America/New_York&max=5 runs material
+news and the digest together over one shared news fetch (runner.run_combined) and streams
+newline-delimited JSON tagged by kind: {"type": "stage", "kind": "digest" | "material",
 "message": ...} while the run progresses, then exactly one terminal event per kind,
 {"type": "result", "kind": ..., "digest" | "material": {...}} or
 {"type": "error", "kind": ..., "message": ...}. The material result usually arrives first.

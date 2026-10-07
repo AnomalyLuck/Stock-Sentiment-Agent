@@ -15,7 +15,7 @@ FOOTER = "AI-generated; may contain errors. Informational only—not investment 
 # Strip CSI, OSC (including hyperlink escapes), and other escape sequences first.
 ESCAPES = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]")
 DATA_NOTE = ("Prices: Yahoo Finance regular session with a 15-minute app cutoff; extended-hours quotes are "
-             "shown separately. Headlines and summaries are provider or search content, not full-article checks.")
+             "shown separately. Headlines and summaries are provider content (Finnhub, Google News), not full-article checks.")
 MAX_COVERAGE_NOTES = 5  # the data note plus the four highest-priority run notes
 
 
